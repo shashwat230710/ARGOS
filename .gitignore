@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+frontend/dist/
+data/raw/
+data/processed/*.npy
+data/processed/*.full.geojson
+*.part
+.DS_Store
+.env
+*.nc
