@@ -1,21 +1,27 @@
 {
-  "name": "polarroute-ui",
+  "name": "polarroute-dss",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tsx server.ts",
     "build": "vite build",
-    "preview": "vite preview"
+    "start": "tsx server.ts",
+    "preview": "vite preview --host 0.0.0.0 --port 3000"
   },
   "dependencies": {
+    "express": "^4.21.2",
     "ol": "^10.3.1",
     "proj4": "^2.15.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
     "vite": "^5.4.11"
   }
 }

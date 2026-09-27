@@ -1,0 +1,5 @@
+{
+  "name": "PolarRoute DSS",
+  "description": "Antarctic Sea-Ice, Iceberg Trajectory, and Navigation Decision Support System with polar-stereographic mapping, 7-day U-Net sea-ice forecasts, and live time-dependent A* route planning.",
+  "requestFramePermissions": []
+}
