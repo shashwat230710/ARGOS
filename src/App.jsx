@@ -1561,6 +1561,13 @@ export default function App() {
                   >
                     04. Live A* &amp; Counterfactual Scoring
                   </button>
+                  <button
+                    type="button"
+                    className={guideTab === "pitch" ? "active" : ""}
+                    onClick={() => setGuideTab("pitch")}
+                  >
+                    05. Presentation Script &amp; Q&amp;A
+                  </button>
                 </div>
 
                 {guideTab === "overview" && (
@@ -1958,6 +1965,112 @@ export default function App() {
                           resistance proxy.
                         </li>
                       </ol>
+                    </div>
+                  </div>
+                )}
+
+                {guideTab === "pitch" && (
+                  <div className="dss-guide-grid">
+                    <div className="dss-guide-col">
+                      <h3>3-Minute Live Presentation Script</h3>
+                      <p className="dss-drawer-lead">
+                        Complete documentation is saved in{" "}
+                        <code>/PRESENTATION_GUIDE.md</code>. Follow this 4-part
+                        flow when presenting live:
+                      </p>
+                      <div className="dss-guide-callout">
+                        <h4>1. The Operational Problem (30 sec)</h4>
+                        <p>
+                          Resupply vessels sailing to India&apos;s{" "}
+                          <strong>Bharati</strong> and <strong>Maitri</strong>{" "}
+                          stations cross dynamic East Antarctic pack ice. Static
+                          climatology misses wind-driven heavy pack ridges (≥40%
+                          SIC) and transient coastal polynyas.{" "}
+                          <strong>ARGOS</strong> combines passive-microwave
+                          satellite sea ice, a causal 2-level residual U-Net,
+                          and time-dependent A* routing on a native 25 km{" "}
+                          <code>EPSG:3412</code> polar grid.
+                        </p>
+                      </div>
+                      <div className="dss-guide-callout">
+                        <h4>2. Satellite Input → Small U-Net Forecast (45 sec)</h4>
+                        <p>
+                          Select <strong>+5d</strong> in the timeline and enable
+                          the <strong>Split Curtain</strong>. Explain that the
+                          U-Net takes 10 channels (7 days of NSIDC satellite SIC{" "}
+                          <code>D-6..D0</code> + ocean mask +{" "}
+                          <code>sin/cos DOY</code>) and predicts the 7-day
+                          residual change <code>ΔSIC</code> in ~4 ms on CPU.
+                        </p>
+                      </div>
+                      <div className="dss-guide-callout">
+                        <h4>3. Validation Gate &amp; Live SGD Training (45 sec)</h4>
+                        <p>
+                          Open <strong>Model &amp; Datasets</strong>. Show that
+                          the U-Net beats both Persistence (B0) and Seasonal
+                          Tendency (B1) across all 7 leads on MAE and 15%
+                          ice-edge IIEE (km²). Click{" "}
+                          <strong>Run +5 Training Epochs</strong> to demonstrate
+                          live gradient descent and inspect internal 3×3
+                          convolutional feature maps.
+                        </p>
+                      </div>
+                      <div className="dss-guide-callout">
+                        <h4>4. Live A* Routing &amp; Counterfactual Proof (60 sec)</h4>
+                        <p>
+                          Adjust <strong>Ice-Risk Penalty (λ)</strong> on the
+                          right panel and click <strong>Step Voyage +1 Day</strong>.
+                          Highlight <strong>02. Counterfactual Evaluation</strong>:
+                          when both routes are scored on true observed satellite
+                          ice after planning, the forecast-aware route saves
+                          heavy-ice exposure hours and total transit time.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="dss-guide-col">
+                      <h3>Anticipated Judge &amp; Reviewer Q&amp;A</h3>
+                      <div className="dss-guide-callout">
+                        <h4>
+                          Q: Why a compact 2-level U-Net instead of a huge
+                          Vision Transformer?
+                        </h4>
+                        <p>
+                          At 25 km resolution over a regional 160×184 polar
+                          grid, 7-day pack-ice evolution is governed by 50–150 km
+                          synoptic wind advection and marginal edge melt. A
+                          2-level residual U-Net with Sobel gradient (∇x, ∇y)
+                          and Laplacian diffusion filters captures the exact
+                          physical receptive field, avoids overfitting on
+                          multi-year satellite archives, and runs in ~4 ms on
+                          shipboard CPU hardware.
+                        </p>
+                      </div>
+                      <div className="dss-guide-callout">
+                        <h4>
+                          Q: Why measure IIEE (Integrated Ice-Edge Error) alongside MAE?
+                        </h4>
+                        <p>
+                          Grid-wide MAE is diluted by open ocean (0% SIC) and
+                          interior pack ice. For polar navigation, accuracy at
+                          the <strong>15% ice-edge boundary</strong> determines
+                          where a ship enters pack ice. IIEE measures the exact
+                          misclassified area (km²) at the 15% contour, and our
+                          loss function upweights pixels near 15% SIC by 3×.
+                        </p>
+                      </div>
+                      <div className="dss-guide-callout">
+                        <h4>
+                          Q: How do you ensure the route comparison is scientifically fair?
+                        </h4>
+                        <p>
+                          Neither route is scored on its own planning assumption.
+                          Both the U-Net route and the Static Climatology route
+                          are locked at departure day D0 and then evaluated
+                          post-hoc against the actual observed NSIDC satellite
+                          sea-ice fields of days D+1..D+14.
+                        </p>
+                      </div>
                     </div>
                   </div>
                 )}
