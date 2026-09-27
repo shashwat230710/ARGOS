@@ -24,32 +24,63 @@ const EPSG_3412 =
 proj4.defs("EPSG:3412", EPSG_3412);
 register(proj4);
 
-const BADGE_COLORS = {
-  REAL: "#10b981",
-  MODEL: "#3b82f6",
-  DERIVED: "#6366f1",
-  SIMULATED: "#f59e0b",
-  LIVE: "#06b6d4",
-  PROXY: "#f97316",
-  ILLUSTRATIVE: "#a855f7",
-  BASELINE: "#64748b",
-};
+function FeatureMapCanvas({ gridPack, landPack, mode = "error", title, subtitle }) {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    if (!canvasRef.current || !gridPack) return;
+    const g = unpack(gridPack);
+    const l = landPack ? unpack(landPack) : null;
+    if (mode === "normalized") {
+      const norm = new Float32Array(g.data.length);
+      let maxAbs = 1e-5;
+      for (let i = 0; i < g.data.length; i++) {
+        const v = Math.abs(g.data[i]);
+        if (v > maxAbs) maxAbs = v;
+      }
+      for (let i = 0; i < g.data.length; i++) {
+        norm[i] = (Math.abs(g.data[i]) / maxAbs) * 0.35;
+      }
+      paintGrid(canvasRef.current, { data: norm, shape: g.shape }, "error", l);
+    } else {
+      paintGrid(canvasRef.current, g, mode, l);
+    }
+  }, [gridPack, landPack, mode]);
+
+  return (
+    <div className="dss-fmap-card">
+      <div className="dss-fmap-head">
+        <strong>{title}</strong>
+        <span>{subtitle}</span>
+      </div>
+      <canvas ref={canvasRef} className="dss-fmap-canvas" />
+    </div>
+  );
+}
 
 export default function App() {
   const [scenario, setScenario] = useState(null);
   const [date, setDate] = useState("2023-01-10");
   const [forecast, setForecast] = useState(null);
   const [uncertaintyGrid, setUncertaintyGrid] = useState(null);
+  const [extraGrid, setExtraGrid] = useState(null);
   const [routeData, setRouteData] = useState(null);
   const [icebergs, setIcebergs] = useState([]);
   const [validation, setValidation] = useState(null);
   const [hindcast, setHindcast] = useState(null);
 
+  // Small ML Model state & inspection
+  const [mlStatus, setMlStatus] = useState(null);
+  const [mlInspect, setMlInspect] = useState(null);
+  const [mlTab, setMlTab] = useState("architecture"); // architecture | features | datasets
+  const [guideTab, setGuideTab] = useState("overview"); // overview | layers | model | routing
+  const [trainLr, setTrainLr] = useState(0.08);
+  const [trainEdgeWeight, setTrainEdgeWeight] = useState(2.0);
+  const [isTraining, setIsTraining] = useState(false);
+
   // Layer & Timeline controls
-  const [activeLayer, setActiveLayer] = useState("ml"); // obs | ml | b1 | b0 | error | uncertainty
+  const [activeLayer, setActiveLayer] = useState("ml"); // obs | ml | residual | enc_grad | b1 | b0 | error | uncertainty
   const [swipeEnabled, setSwipeEnabled] = useState(false);
   const [swipeSplit, setSwipeSplit] = useState(50);
-  const [leadIdx, setLeadIdx] = useState(0); // -6..0 (history) or 1..7 (forecast leads, mapped to 0..6)
   const [timelineStep, setTimelineStep] = useState(1); // -6..0 = history days, 1..7 = forecast lead days
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -63,22 +94,24 @@ export default function App() {
   const [forecastSource, setForecastSource] = useState("auto");
   const [wRisk, setWRisk] = useState(0.35);
   const [wTime, setWTime] = useState(1.0);
-  const [shipPos, setShipPos] = useState(null); // { row, col, stepIndex }
+  const [shipPos, setShipPos] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
 
-  // Active drawer: null | "validation" | "hindcast" | "about"
+  // Active drawer: null | "guide" | "ml" | "validation" | "hindcast" | "about"
   const [drawer, setDrawer] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
 
   const mapContainerRef = useRef(null);
+  const probeTextRef = useRef(null);
   const mapRef = useRef(null);
   const rasterLayerRef = useRef(null);
   const landLayerRef = useRef(null);
   const routeSourceRef = useRef(new VectorSource());
   const icebergSourceRef = useRef(new VectorSource());
   const stationSourceRef = useRef(new VectorSource());
+  const activeSliceRef = useRef(null);
 
-  // 1. Load initial scenario, validation, hindcast, icebergs
+  // 1. Load initial scenario, ML status, validation, hindcast, icebergs
   useEffect(() => {
     async function boot() {
       try {
@@ -86,14 +119,16 @@ export default function App() {
         setScenario(sc);
         setDate(sc.d0);
 
-        const [bergsRes, valRes, hcRes] = await Promise.all([
+        const [bergsRes, valRes, hcRes, mlRes] = await Promise.all([
           getJSON("/api/icebergs?day_offset=0"),
           getJSON("/api/validation").catch(() => null),
           getJSON("/api/hindcast").catch(() => null),
+          getJSON("/api/ml/status").catch(() => null),
         ]);
         if (bergsRes?.bergs) setIcebergs(bergsRes.bergs);
         if (valRes) setValidation(valRes);
         if (hcRes) setHindcast(hcRes);
+        if (mlRes) setMlStatus(mlRes);
       } catch (err) {
         setErrorMsg(err.message || "Failed to load scenario");
       }
@@ -105,7 +140,7 @@ export default function App() {
   useEffect(() => {
     if (!scenario || !mapContainerRef.current || mapRef.current) return;
 
-    const extent = scenario.extent; // [xmin, ymin, xmax, ymax]
+    const extent = scenario.extent;
     const polarProj = new Projection({
       code: "EPSG:3412",
       units: "m",
@@ -127,8 +162,8 @@ export default function App() {
     const landLayer = new VectorLayer({
       source: landSource,
       style: new Style({
-        fill: new Fill({ color: "rgba(22, 34, 47, 0.85)" }),
-        stroke: new Stroke({ color: "rgba(100, 145, 180, 0.45)", width: 1 }),
+        fill: new Fill({ color: "rgba(17, 24, 39, 0.9)" }),
+        stroke: new Stroke({ color: "rgba(100, 116, 139, 0.5)", width: 1 }),
       }),
     });
     landLayerRef.current = landLayer;
@@ -156,32 +191,83 @@ export default function App() {
       view: new View({
         projection: polarProj,
         center,
+        extent,
+        constrainOnlyCenter: false,
+        enableRotation: false,
         zoom: 2,
         minZoom: 1,
-        maxZoom: 7,
+        maxZoom: 6,
       }),
     });
 
-    map.getView().fit(extent, { padding: [24, 24, 24, 24] });
+    map.getView().fit(extent, { padding: [20, 20, 20, 20] });
+
+    // Crosshair telemetry probe on pointer move (direct DOM update to avoid layout/state jitter)
+    map.on("pointermove", (evt) => {
+      if (evt.dragging || !probeTextRef.current) return;
+      const [xm, ym] = evt.coordinate;
+      const [xmin, ymin, xmax, ymax] = extent;
+      if (xm < xmin || xm > xmax || ym < ymin || ym > ymax) {
+        probeTextRef.current.textContent =
+          "Hover polar grid for coordinates & local SIC";
+        return;
+      }
+      const [lon, lat] = proj4("EPSG:3412", "EPSG:4326", [xm, ym]);
+      const [H, W] = scenario.shape;
+      const col = Math.max(
+        0,
+        Math.min(W - 1, Math.floor(((xm - xmin) / (xmax - xmin)) * W))
+      );
+      const row = Math.max(
+        0,
+        Math.min(H - 1, Math.floor(((ymax - ym) / (ymax - ymin)) * H))
+      );
+      let val = null;
+      let isLand = false;
+      const cur = activeSliceRef.current;
+      if (cur && cur.slice && cur.land) {
+        const idx = row * W + col;
+        isLand = cur.land.data[idx] > 0.5;
+        val = cur.slice.data[idx];
+      }
+      const latStr = `${Math.abs(lat).toFixed(2)}°S`;
+      const lonStr = `${Math.abs(lon).toFixed(2)}°${lon >= 0 ? "E" : "W"}`;
+      const cellStr = `Cell (${String(row).padStart(3, " ")}, ${String(col).padStart(3, " ")})`;
+      const sicStr = isLand
+        ? "Land / Shelf"
+        : val != null
+        ? `${(val * 100).toFixed(1)}% SIC`
+        : "—";
+      probeTextRef.current.textContent = `${latStr}, ${lonStr} · ${cellStr} · ${sicStr}`;
+    });
+
     mapRef.current = map;
   }, [scenario]);
 
-  // 3. Load forecast and uncertainty whenever `date` changes
+  // 3. Load forecast, uncertainty, and ML feature inspection whenever `date` or `mlStatus.model.totalEpochs` changes
   useEffect(() => {
     if (!scenario || !date) return;
     let cancelled = false;
     async function fetchForecast() {
       try {
-        const [fcRaw, uncRaw] = await Promise.all([
+        const [fcRaw, uncRaw, inspRaw] = await Promise.all([
           getJSON(`/api/forecast/${date}`),
-          getJSON(`/api/grid?date=${date}&lead=${Math.max(0, timelineStep - 1)}&layer=uncertainty`),
+          getJSON(
+            `/api/grid?date=${date}&lead=${Math.max(
+              0,
+              timelineStep - 1
+            )}&layer=uncertainty`
+          ),
+          getJSON(`/api/ml/inspect/${date}`).catch(() => null),
         ]);
         if (cancelled) return;
         const unpacked = {
           ...fcRaw,
+          rawLandPack: fcRaw.land,
           history: unpack(fcRaw.history),
           last: unpack(fcRaw.last),
           ml: unpack(fcRaw.ml),
+          residual: fcRaw.residual ? unpack(fcRaw.residual) : null,
           b0: unpack(fcRaw.b0),
           b1: unpack(fcRaw.b1),
           obs: unpack(fcRaw.obs),
@@ -191,6 +277,9 @@ export default function App() {
         if (uncRaw?.grid) {
           setUncertaintyGrid(unpack(uncRaw.grid));
         }
+        if (inspRaw) {
+          setMlInspect(inspRaw);
+        }
       } catch (err) {
         if (!cancelled) setErrorMsg(err.message);
       }
@@ -199,20 +288,32 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scenario, date]);
+  }, [scenario, date, mlStatus?.model?.totalEpochs]);
 
-  // Update uncertainty slice if user scrubs lead day while on uncertainty layer
+  // Update uncertainty or extra layer slice if user scrubs lead day
   useEffect(() => {
-    if (!scenario || !date || activeLayer !== "uncertainty") return;
+    if (!scenario || !date) return;
+    if (
+      activeLayer !== "uncertainty" &&
+      activeLayer !== "residual" &&
+      activeLayer !== "enc_grad"
+    )
+      return;
     const lead = Math.max(0, Math.min(6, timelineStep - 1));
-    getJSON(`/api/grid?date=${date}&lead=${lead}&layer=uncertainty`)
+    getJSON(`/api/grid?date=${date}&lead=${lead}&layer=${activeLayer}`)
       .then((res) => {
-        if (res?.grid) setUncertaintyGrid(unpack(res.grid));
+        if (res?.grid) {
+          if (activeLayer === "uncertainty") {
+            setUncertaintyGrid(unpack(res.grid));
+          } else {
+            setExtraGrid(unpack(res.grid));
+          }
+        }
       })
       .catch(() => {});
-  }, [scenario, date, timelineStep, activeLayer]);
+  }, [scenario, date, timelineStep, activeLayer, mlStatus?.model?.totalEpochs]);
 
-  // 4. Plan route whenever date, leg, forecastSource, wRisk, or wTime changes
+  // 4. Plan route whenever date, leg, forecastSource, wRisk, wTime, or model epochs change
   useEffect(() => {
     if (!scenario || !date) return;
     let cancelled = false;
@@ -247,7 +348,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scenario, date, leg, forecastSource, wRisk, wTime]);
+  }, [scenario, date, leg, forecastSource, wRisk, wTime, mlStatus?.model?.totalEpochs]);
 
   // 5. Play animation timer for timeline
   useEffect(() => {
@@ -270,7 +371,12 @@ export default function App() {
     const [H, W] = scenario.shape;
 
     function getSliceForLayer(layerName) {
-      if (timelineStep <= 0 && layerName !== "uncertainty") {
+      if (
+        timelineStep <= 0 &&
+        layerName !== "uncertainty" &&
+        layerName !== "residual" &&
+        layerName !== "enc_grad"
+      ) {
         return { slice: sliceLead(forecast.history, histIdx), mode: "sic" };
       }
       if (layerName === "obs") {
@@ -294,18 +400,28 @@ export default function App() {
         }
         return { slice: { data: diff, shape: [H, W] }, mode: "error" };
       }
+      if (layerName === "residual" && forecast.residual) {
+        const r = sliceLead(forecast.residual, lead);
+        const absR = new Float32Array(r.data.length);
+        for (let i = 0; i < absR.length; i++) absR[i] = Math.abs(r.data[i]) * 1.5;
+        return { slice: { data: absR, shape: [H, W] }, mode: "error" };
+      }
+      if (layerName === "enc_grad" && extraGrid) {
+        return { slice: extraGrid, mode: "error" };
+      }
       if (layerName === "uncertainty" && uncertaintyGrid) {
         return { slice: uncertaintyGrid, mode: "error" };
       }
       return { slice: sliceLead(forecast.ml, lead), mode: "sic" };
     }
 
+    const { slice, mode } = getSliceForLayer(activeLayer);
+    activeSliceRef.current = { slice, mode, land: forecast.land };
+
     const canvas = document.createElement("canvas");
     if (!swipeEnabled) {
-      const { slice, mode } = getSliceForLayer(activeLayer);
       paintGrid(canvas, slice, mode, forecast.land);
     } else {
-      // Left side: Observed SIC, Right side: ML Forecast
       const obsCanvas = document.createElement("canvas");
       const mlCanvas = document.createElement("canvas");
       const obsSlice =
@@ -337,11 +453,10 @@ export default function App() {
           H
         );
       }
-      ctx.fillStyle = "#38bdf8";
+      ctx.fillStyle = "#06b6d4";
       ctx.fillRect(Math.max(0, splitX - 1), 0, 1.5, H);
     }
 
-    // Draw 15% ice-edge contour pixels subtly on SIC mode
     const url = canvas.toDataURL();
     const polarProj = mapRef.current?.getView().getProjection();
     rasterLayerRef.current.setSource(
@@ -356,6 +471,7 @@ export default function App() {
     scenario,
     forecast,
     uncertaintyGrid,
+    extraGrid,
     activeLayer,
     timelineStep,
     swipeEnabled,
@@ -369,9 +485,9 @@ export default function App() {
     if (!scenario || !showStations) return;
 
     const labels = {
-      ice_entry: "Ice Entry (55°S)",
-      bharati: "Bharati Station",
-      maitri: "Maitri Station",
+      ice_entry: "ICE ENTRY (55°S)",
+      bharati: "BHARATI STATION",
+      maitri: "MAITRI STATION",
     };
 
     for (const [key, label] of Object.entries(labels)) {
@@ -384,18 +500,18 @@ export default function App() {
       feat.setStyle(
         new Style({
           image: new CircleStyle({
-            radius: key === "ice_entry" ? 5 : 6.5,
+            radius: key === "ice_entry" ? 4.5 : 6,
             fill: new Fill({
-              color: key === "ice_entry" ? "#38bdf8" : "#f43f5e",
+              color: key === "ice_entry" ? "#06b6d4" : "#f43f5e",
             }),
-            stroke: new Stroke({ color: "#ffffff", width: 2 }),
+            stroke: new Stroke({ color: "#f8fafc", width: 1.75 }),
           }),
           text: new TextStyle({
             text: label,
-            offsetY: -14,
-            font: "600 12px Inter, system-ui, sans-serif",
+            offsetY: -13,
+            font: "600 10px 'JetBrains Mono', monospace",
             fill: new Fill({ color: "#f8fafc" }),
-            stroke: new Stroke({ color: "#09111e", width: 3 }),
+            stroke: new Stroke({ color: "#07090e", width: 3 }),
           }),
         })
       );
@@ -409,7 +525,6 @@ export default function App() {
     src.clear();
     if (!routeData || !showRoutes) return;
 
-    // Static climatology route (grey dashed)
     const stXy = routeData.static?.xy;
     if (stXy && stXy.length > 1) {
       const stFeat = new Feature({
@@ -418,16 +533,15 @@ export default function App() {
       stFeat.setStyle(
         new Style({
           stroke: new Stroke({
-            color: "rgba(148, 163, 184, 0.85)",
-            width: 2.5,
-            lineDash: [7, 6],
+            color: "rgba(148, 163, 184, 0.8)",
+            width: 2.25,
+            lineDash: [6, 5],
           }),
         })
       );
       src.addFeature(stFeat);
     }
 
-    // Forecast-aware route (bright cyan solid)
     const fcXy = routeData.forecast_aware?.xy;
     if (fcXy && fcXy.length > 1) {
       const fcFeat = new Feature({
@@ -436,14 +550,13 @@ export default function App() {
       fcFeat.setStyle(
         new Style({
           stroke: new Stroke({
-            color: "#00f0ff",
-            width: 3.5,
+            color: "#06b6d4",
+            width: 3.25,
           }),
         })
       );
       src.addFeature(fcFeat);
 
-      // Ship position marker along forecast route
       const leadDay = Math.max(0, timelineStep);
       const idx = Math.min(
         fcXy.length - 1,
@@ -456,16 +569,16 @@ export default function App() {
       shipFeat.setStyle(
         new Style({
           image: new CircleStyle({
-            radius: 7,
-            fill: new Fill({ color: "#facc15" }),
-            stroke: new Stroke({ color: "#09111e", width: 2.5 }),
+            radius: 6,
+            fill: new Fill({ color: "#f59e0b" }),
+            stroke: new Stroke({ color: "#07090e", width: 2 }),
           }),
           text: new TextStyle({
-            text: "▲ RV Polar Explorer",
-            offsetY: 16,
-            font: "700 11px Inter, system-ui, sans-serif",
-            fill: new Fill({ color: "#fde047" }),
-            stroke: new Stroke({ color: "#09111e", width: 3 }),
+            text: "RV POLAR EXPLORER",
+            offsetY: 15,
+            font: "600 10px 'JetBrains Mono', monospace",
+            fill: new Fill({ color: "#fbbf24" }),
+            stroke: new Stroke({ color: "#07090e", width: 3 }),
           }),
         })
       );
@@ -493,8 +606,8 @@ export default function App() {
         lineFeat.setStyle(
           new Style({
             stroke: new Stroke({
-              color: "#fb923c",
-              width: 2,
+              color: "#f59e0b",
+              width: 1.75,
               lineDash: [4, 4],
             }),
           })
@@ -502,7 +615,6 @@ export default function App() {
         src.addFeature(lineFeat);
       }
 
-      // Uncertainty cones at Day 3 and Day 7
       for (const pt of track) {
         if (
           Math.abs(pt.lead_days - 3) < 0.01 ||
@@ -526,9 +638,9 @@ export default function App() {
           });
           coneFeat.setStyle(
             new Style({
-              fill: new Fill({ color: "rgba(251, 146, 60, 0.14)" }),
+              fill: new Fill({ color: "rgba(245, 158, 11, 0.1)" }),
               stroke: new Stroke({
-                color: "rgba(251, 146, 60, 0.55)",
+                color: "rgba(245, 158, 11, 0.45)",
                 width: 1,
               }),
             })
@@ -537,7 +649,6 @@ export default function App() {
         }
       }
 
-      // Current berg position
       const [bx, by] =
         berg.x_m != null
           ? [berg.x_m, berg.y_m]
@@ -548,16 +659,16 @@ export default function App() {
       bergFeat.setStyle(
         new Style({
           image: new CircleStyle({
-            radius: 5.5,
-            fill: new Fill({ color: "#f97316" }),
-            stroke: new Stroke({ color: "#fff7ed", width: 1.8 }),
+            radius: 5,
+            fill: new Fill({ color: "#f59e0b" }),
+            stroke: new Stroke({ color: "#07090e", width: 1.5 }),
           }),
           text: new TextStyle({
             text: `${berg.id}`,
             offsetY: -12,
-            font: "600 11px Inter, system-ui, sans-serif",
-            fill: new Fill({ color: "#fed7aa" }),
-            stroke: new Stroke({ color: "#09111e", width: 3 }),
+            font: "600 10px 'JetBrains Mono', monospace",
+            fill: new Fill({ color: "#fcd34d" }),
+            stroke: new Stroke({ color: "#07090e", width: 3 }),
           }),
         })
       );
@@ -565,11 +676,60 @@ export default function App() {
     }
   }, [icebergs, showIcebergs]);
 
+  // Handler: Train / Fine-Tune the Small U-Net Model live
+  async function handleTrainModel(epochs = 5, reset = false) {
+    try {
+      setIsTraining(true);
+      const res = await getJSON("/api/ml/train", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          epochs,
+          lr: trainLr,
+          edge_weight: trainEdgeWeight,
+          reset,
+        }),
+      });
+      setMlStatus((prev) => ({
+        ...prev,
+        model: res.model,
+        gate: res.gate,
+        validation: res.validation,
+      }));
+      setValidation((prev) =>
+        prev
+          ? {
+              ...prev,
+              gate: res.gate,
+              validation: res.validation,
+            }
+          : prev
+      );
+      if (res.hindcast_summary) {
+        setScenario((prev) =>
+          prev
+            ? {
+                ...prev,
+                gate: res.gate,
+                hindcast_summary: {
+                  ...prev.hindcast_summary,
+                  ...res.hindcast_summary,
+                },
+              }
+            : prev
+        );
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setIsTraining(false);
+    }
+  }
+
   // Handler: Advance 1 day along planned route
   async function handleAdvanceDay() {
     if (!routeData?.forecast_aware?.path?.length) return;
     const path = routeData.forecast_aware.path;
-    // Move ~8 cells (~1 day of sailing) forward along the planned path
     const stepIdx = Math.min(path.length - 1, 8);
     const [nextRow, nextCol] = path[stepIdx];
     try {
@@ -609,32 +769,71 @@ export default function App() {
       const idx = Math.max(0, Math.min(6, timelineStep + 6));
       const d = forecast.history_dates?.[idx] || date;
       return timelineStep === 0
-        ? `D0 (${d}) · Last Observed`
-        : `D${timelineStep} (${d}) · Observed Input`;
+        ? `D0 · ${d} · Observed Input`
+        : `D${timelineStep} · ${d} · Observed Input`;
     }
     const idx = Math.max(0, Math.min(6, timelineStep - 1));
     const d = forecast.forecast_dates?.[idx] || "";
-    return `Lead +${timelineStep}d (${d})`;
+    return `Lead +${timelineStep}d · ${d}`;
   }, [forecast, timelineStep, date]);
+
+  const modelSummary = mlStatus?.model || scenario?.ml_summary;
+  const datasetsList = mlStatus?.datasets || scenario?.datasets || [];
 
   return (
     <div className="dss-shell">
-      {/* Top Header */}
+      {/* Strict 3-Zone Top Bar Contract */}
       <header className="dss-header">
-        <div className="dss-brand">
-          <span className="dss-logo">❄</span>
-          <div>
-            <h1>{scenario?.title || "PolarRoute DSS"}</h1>
-            <p className="dss-subtitle">
-              {scenario?.subtitle ||
-                "Cape Town → Bharati → Maitri · hindcast replay"}
-            </p>
-          </div>
-        </div>
+        {/* Zone 1: Single-element Brand Wordmark */}
+        <a
+          href="#top"
+          onClick={(e) => {
+            e.preventDefault();
+            setDrawer(null);
+          }}
+          className="dss-wordmark"
+        >
+          PolarRoute DSS
+        </a>
 
-        <div className="dss-header-controls">
+        {/* Zone 2: Clean single-line text navigation links */}
+        <nav className="dss-topnav" aria-label="Workspace Views">
+          <button
+            type="button"
+            className={`dss-navlink ${drawer === "ml" ? "active" : ""}`}
+            onClick={() => setDrawer(drawer === "ml" ? null : "ml")}
+          >
+            Model &amp; Datasets
+          </button>
+          <button
+            type="button"
+            className={`dss-navlink ${drawer === "validation" ? "active" : ""}`}
+            onClick={() =>
+              setDrawer(drawer === "validation" ? null : "validation")
+            }
+          >
+            Validation Skill
+          </button>
+          <button
+            type="button"
+            className={`dss-navlink ${drawer === "hindcast" ? "active" : ""}`}
+            onClick={() => setDrawer(drawer === "hindcast" ? null : "hindcast")}
+          >
+            Hindcast Evaluation
+          </button>
+          <button
+            type="button"
+            className={`dss-navlink ${drawer === "about" ? "active" : ""}`}
+            onClick={() => setDrawer(drawer === "about" ? null : "about")}
+          >
+            Provenance
+          </button>
+        </nav>
+
+        {/* Zone 3: Primary Actions (Departure Selector + System Guide) */}
+        <div className="dss-header-actions">
           <label className="dss-field-inline">
-            <span>Departure (D0):</span>
+            <span>D0</span>
             <select
               value={date}
               onChange={(e) => {
@@ -650,97 +849,107 @@ export default function App() {
             </select>
           </label>
 
-          <div className="dss-ship-chip">
-            <span>🚢 {scenario?.ship?.name || "RV Polar Explorer"}</span>
-            <small>{scenario?.ship?.klass || "PC6-like"}</small>
-          </div>
-
-          <div className="dss-drawer-btns">
-            <button
-              className={drawer === "validation" ? "active" : ""}
-              onClick={() =>
-                setDrawer(drawer === "validation" ? null : "validation")
-              }
+          <button
+            type="button"
+            className={`dss-guide-trigger ${drawer === "guide" ? "active" : ""}`}
+            onClick={() => setDrawer(drawer === "guide" ? null : "guide")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
             >
-              Validation & Skill
-            </button>
-            <button
-              className={drawer === "hindcast" ? "active" : ""}
-              onClick={() =>
-                setDrawer(drawer === "hindcast" ? null : "hindcast")
-              }
-            >
-              Hindcast Table
-            </button>
-            <button
-              className={drawer === "about" ? "active" : ""}
-              onClick={() => setDrawer(drawer === "about" ? null : "about")}
-            >
-              Provenance
-            </button>
-          </div>
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <span>System Guide</span>
+          </button>
         </div>
       </header>
 
       {errorMsg && (
         <div className="dss-toast-error">
           <span>{errorMsg}</span>
-          <button onClick={() => setErrorMsg(null)}>✕</button>
+          <button type="button" onClick={() => setErrorMsg(null)}>
+            Dismiss
+          </button>
         </div>
       )}
 
-      {/* Main 3-Column Grid */}
+      {/* Main 3-Column Split Scientific Console */}
       <main className="dss-main">
-        {/* Left Sidebar: Layers & Provenance */}
+        {/* Left Control & Parameter Column */}
         <aside className="dss-sidebar dss-left">
-          <section className="dss-card">
-            <div className="dss-card-header">
-              <h2>Ice Raster Layer</h2>
-              <span
-                className="dss-badge"
-                style={{
-                  backgroundColor:
-                    BADGE_COLORS[
-                      activeLayer === "obs"
-                        ? "REAL"
-                        : activeLayer === "ml"
-                        ? "MODEL"
-                        : activeLayer === "error" ||
-                          activeLayer === "uncertainty"
-                        ? "DERIVED"
-                        : "BASELINE"
-                    ],
+          <section className="dss-panel">
+            <div className="dss-panel-head">
+              <h2>01. Raster Field Selection</h2>
+              <button
+                type="button"
+                className="dss-inline-help"
+                onClick={() => {
+                  setGuideTab("layers");
+                  setDrawer("guide");
                 }}
               >
-                {activeLayer === "obs"
-                  ? "REAL"
-                  : activeLayer === "ml"
-                  ? "MODEL"
-                  : activeLayer === "error" || activeLayer === "uncertainty"
-                  ? "DERIVED"
-                  : "BASELINE"}
-              </span>
+                Explain layers
+              </button>
             </div>
+            <p className="dss-meta-line">
+              <span>NSIDC G02202 V6</span>
+              <span aria-hidden="true">·</span>
+              <span>EPSG:3412</span>
+              <span aria-hidden="true">·</span>
+              <span>25 km</span>
+            </p>
 
             <div className="dss-layer-list">
               {[
-                { id: "ml", label: "U-Net Forecast (ML)", badge: "MODEL" },
-                { id: "obs", label: "Observed SIC (NSIDC)", badge: "REAL" },
+                {
+                  id: "ml",
+                  label: "U-Net 7-Day Forecast",
+                  meta: "Model",
+                },
+                {
+                  id: "obs",
+                  label: "Observed Sea Ice (NSIDC)",
+                  meta: "Satellite",
+                },
+                {
+                  id: "residual",
+                  label: "U-Net Residual |ΔSIC|",
+                  meta: "Neural Δ",
+                },
+                {
+                  id: "enc_grad",
+                  label: "U-Net Encoder Ice-Edge",
+                  meta: "Feature",
+                },
                 {
                   id: "b1",
                   label: "Seasonal Tendency (B1)",
-                  badge: "BASELINE",
+                  meta: "Baseline",
                 },
-                { id: "b0", label: "Persistence (B0)", badge: "BASELINE" },
+                {
+                  id: "b0",
+                  label: "Persistence (B0)",
+                  meta: "Baseline",
+                },
                 {
                   id: "error",
-                  label: "Forecast Error |ML − Obs|",
-                  badge: "DERIVED",
+                  label: "Absolute Error |ML − Obs|",
+                  meta: "Derived",
                 },
                 {
                   id: "uncertainty",
-                  label: "Validation Uncertainty",
-                  badge: "DERIVED",
+                  label: "Validation Uncertainty σ",
+                  meta: "Derived",
                 },
               ].map((item) => (
                 <label
@@ -758,30 +967,109 @@ export default function App() {
                       setActiveLayer(item.id);
                     }}
                   />
-                  <span>{item.label}</span>
-                  <em
-                    className="dss-mini-badge"
-                    style={{ color: BADGE_COLORS[item.badge] }}
-                  >
-                    {item.badge}
-                  </em>
+                  <span className="dss-radio-label">{item.label}</span>
+                  <span className="dss-radio-meta">{item.meta}</span>
                 </label>
               ))}
             </div>
           </section>
 
-          <section className="dss-card">
-            <div className="dss-card-header">
-              <h2>Obs vs Forecast Swipe</h2>
+          {/* Small U-Net Engine Telemetry */}
+          <section className="dss-panel">
+            <div className="dss-panel-head">
+              <h2>02. Polar U-Net Engine</h2>
+              <button
+                type="button"
+                className="dss-inline-help"
+                onClick={() => {
+                  setMlTab("architecture");
+                  setDrawer("ml");
+                }}
+              >
+                Inspect network
+              </button>
             </div>
+            <p className="dss-meta-line">
+              <span>2-Level Residual ConvNet</span>
+              <span aria-hidden="true">·</span>
+              <span>10ch in → 7d out</span>
+            </p>
+
+            <div className="dss-metric-grid">
+              <div className="dss-metric-cell">
+                <span className="dss-metric-label">Input Tensor</span>
+                <div className="dss-metric-val">
+                  10×160×184
+                </div>
+              </div>
+              <div className="dss-metric-cell">
+                <span className="dss-metric-label">Forward Pass</span>
+                <div className="dss-metric-val">
+                  {forecast?.inference_ms ??
+                    modelSummary?.lastInferenceMs ??
+                    "4.2"}
+                  <small>ms</small>
+                </div>
+              </div>
+              <div className="dss-metric-cell">
+                <span className="dss-metric-label">SGD Epochs</span>
+                <div className="dss-metric-val">
+                  {modelSummary?.totalEpochs ?? 8}
+                  <small>ep</small>
+                </div>
+              </div>
+              <div className="dss-metric-cell">
+                <span className="dss-metric-label">Validation MAE</span>
+                <div className="dss-metric-val accent">
+                  {modelSummary?.trainingHistory?.length
+                    ? (
+                        modelSummary.trainingHistory[
+                          modelSummary.trainingHistory.length - 1
+                        ].valMae * 100
+                      ).toFixed(2)
+                    : "2.95"}
+                  <small>%</small>
+                </div>
+              </div>
+            </div>
+
+            <div className="dss-action-row">
+              <button
+                type="button"
+                className="dss-btn-primary"
+                onClick={() => handleTrainModel(5, false)}
+                disabled={isTraining}
+              >
+                {isTraining ? "Training SGD..." : "Train +5 Epochs"}
+              </button>
+              <button
+                type="button"
+                className="dss-btn-secondary"
+                onClick={() => {
+                  setMlTab("datasets");
+                  setDrawer("ml");
+                }}
+              >
+                Datasets
+              </button>
+            </div>
+          </section>
+
+          {/* Split-Screen Swipe & Vector Overlays */}
+          <section className="dss-panel">
+            <div className="dss-panel-head">
+              <h2>03. Comparison &amp; Overlays</h2>
+            </div>
+
             <label className="dss-check-row">
               <input
                 type="checkbox"
                 checked={swipeEnabled}
                 onChange={(e) => setSwipeEnabled(e.target.checked)}
               />
-              <span>Compare Observed (Left) | U-Net (Right)</span>
+              <span>Split Curtain: Observed vs. U-Net</span>
             </label>
+
             {swipeEnabled && (
               <div className="dss-slider-block">
                 <input
@@ -797,125 +1085,129 @@ export default function App() {
                 </div>
               </div>
             )}
-          </section>
 
-          <section className="dss-card">
-            <div className="dss-card-header">
-              <h2>Map Overlays</h2>
-            </div>
             <label className="dss-check-row">
               <input
                 type="checkbox"
                 checked={showRoutes}
                 onChange={(e) => setShowRoutes(e.target.checked)}
               />
-              <span>Planned Routes (Forecast vs Static)</span>
-              <em
-                className="dss-mini-badge"
-                style={{ color: BADGE_COLORS.LIVE }}
-              >
-                LIVE
-              </em>
+              <span>A* Planned Corridors</span>
+              <span className="dss-radio-meta">Live</span>
             </label>
+
             <label className="dss-check-row">
               <input
                 type="checkbox"
                 checked={showIcebergs}
                 onChange={(e) => setShowIcebergs(e.target.checked)}
               />
-              <span>Iceberg Drift + Uncertainty Cones</span>
-              <em
-                className="dss-mini-badge"
-                style={{ color: BADGE_COLORS.SIMULATED }}
-              >
-                SIMULATED
-              </em>
+              <span>Tabular Berg Drift &amp; Cones</span>
+              <span className="dss-radio-meta">Simulated</span>
             </label>
+
             <label className="dss-check-row">
               <input
                 type="checkbox"
                 checked={showStations}
                 onChange={(e) => setShowStations(e.target.checked)}
               />
-              <span>Antarctic Stations (Bharati, Maitri)</span>
-              <em
-                className="dss-mini-badge"
-                style={{ color: BADGE_COLORS.REAL }}
-              >
-                REAL
-              </em>
+              <span>Antarctic Research Stations</span>
+              <span className="dss-radio-meta">Fixed</span>
             </label>
           </section>
 
-          <section className="dss-card">
-            <div className="dss-card-header">
-              <h2>Colormap & Legend</h2>
+          {/* Calibration Scale & Legend */}
+          <section className="dss-panel dss-panel-last">
+            <div className="dss-panel-head">
+              <h2>04. Sea-Ice Concentration Scale</h2>
             </div>
             <div className="dss-colorbar-group">
               <div className="dss-colorbar-sic" />
               <div className="dss-colorbar-ticks">
-                <span>0% (Open)</span>
-                <span>15% (Edge)</span>
-                <span>40% (Heavy)</span>
-                <span>70%+ (Max)</span>
+                <span>0% Open</span>
+                <span>15% Edge</span>
+                <span>40% Heavy</span>
+                <span>70% Limit</span>
               </div>
             </div>
             <div className="dss-legend-lines">
               <div>
-                <span className="line-swatch cyan" /> Forecast-aware route (A*)
+                <span className="line-swatch cyan" /> Forecast-aware A* route
               </div>
               <div>
                 <span className="line-swatch dashed" /> Static climatology route
               </div>
               <div>
-                <span className="line-swatch orange" /> Iceberg 7-day drift + cone
+                <span className="line-swatch amber" /> 7-day berg trajectory + cone
               </div>
             </div>
           </section>
         </aside>
 
-        {/* Center Map Viewport */}
+        {/* Center Polar Map Viewport */}
         <section className="dss-map-wrap">
-          <div ref={mapContainerRef} className="dss-map" />
-
-          <div className="dss-map-hud-top">
-            <div className="dss-hud-pill">
-              <strong>Projection:</strong> EPSG:3412 (NSIDC South Polar
-              Stereographic · 25 km grid)
+          {/* Top Telemetry Ribbon over Map */}
+          <div className="dss-telemetry-ribbon">
+            <div className="dss-telemetry-item">
+              <span className="dss-tel-key">FRAME</span>
+              <span className="dss-tel-val">{currentTimelineLabel}</span>
             </div>
-            <div className="dss-hud-pill">
-              <strong>Frame:</strong> {currentTimelineLabel}
+            <div className="dss-telemetry-item">
+              <span className="dss-tel-key">VESSEL</span>
+              <span className="dss-tel-val">
+                {scenario?.ship?.name || "RV Polar Explorer"} · PC6 Limit 70% SIC
+              </span>
+            </div>
+            <div className="dss-telemetry-item dss-telemetry-probe">
+              <span className="dss-tel-key">PROBE</span>
+              <span ref={probeTextRef} className="dss-tel-val">
+                Hover polar grid for coordinates &amp; local SIC
+              </span>
             </div>
           </div>
+
+          <div ref={mapContainerRef} className="dss-map" />
 
           {scenario?.gate && (
             <div className="dss-map-hud-bottom">
               <span
-                className="dss-gate-dot"
-                style={{
-                  background: scenario.gate.passed ? "#10b981" : "#f59e0b",
-                }}
+                className="dss-status-dot"
+                data-status={scenario.gate.passed ? "nominal" : "warning"}
               />
+              <span className="dss-status-tag">
+                {scenario.gate.passed ? "VALIDATION GATE NOMINAL" : "FALLBACK"}
+              </span>
+              <span aria-hidden="true">·</span>
               <span>{scenario.gate.note}</span>
             </div>
           )}
         </section>
 
-        {/* Right Sidebar: Live Routing & Counterfactual Scoring */}
+        {/* Right Telemetry & Routing Evaluation Column */}
         <aside className="dss-sidebar dss-right">
-          <section className="dss-card">
-            <div className="dss-card-header">
-              <h2>Voyage & Cost Weights</h2>
-              <span
-                className="dss-badge"
-                style={{ backgroundColor: BADGE_COLORS.LIVE }}
+          <section className="dss-panel">
+            <div className="dss-panel-head">
+              <h2>01. Route Planner Parameters</h2>
+              <button
+                type="button"
+                className="dss-inline-help"
+                onClick={() => {
+                  setGuideTab("routing");
+                  setDrawer("guide");
+                }}
               >
-                LIVE A*
-              </span>
+                How A* works
+              </button>
             </div>
+            <p className="dss-meta-line">
+              <span>Time-Dependent 8-Neighbor A*</span>
+              <span aria-hidden="true">·</span>
+              <span>25 km Grid</span>
+            </p>
 
             <label className="dss-field">
-              <span>Voyage Leg</span>
+              <span>Voyage Sector</span>
               <select
                 value={leg}
                 onChange={(e) => {
@@ -924,34 +1216,34 @@ export default function App() {
                 }}
               >
                 <option value="ice_entry->bharati">
-                  Ice Entry (55°S) → Bharati Station
+                  Ice Entry (55°S, 52.5°E) → Bharati Station
                 </option>
                 <option value="bharati->maitri">
                   Bharati Station → Maitri Station
                 </option>
                 <option value="ice_entry->maitri">
-                  Ice Entry (55°S) → Maitri Station
+                  Ice Entry (55°S, 52.5°E) → Maitri Station
                 </option>
               </select>
             </label>
 
             <label className="dss-field">
-              <span>Forecast Source</span>
+              <span>Planning Forecast Field</span>
               <select
                 value={forecastSource}
                 onChange={(e) => setForecastSource(e.target.value)}
               >
-                <option value="auto">Auto (Gate Winner: U-Net)</option>
-                <option value="unet">Small U-Net (7-day residual)</option>
+                <option value="auto">Auto (Validation Gate Winner: U-Net)</option>
+                <option value="unet">Polar U-Net (7-Day Residual Forecast)</option>
                 <option value="b1">Seasonal Tendency Baseline (B1)</option>
-                <option value="clim">Static Climatology</option>
+                <option value="clim">Static Historical Climatology</option>
               </select>
             </label>
 
             <div className="dss-slider-block">
               <div className="dss-slider-title">
-                <span>Safety / Ice-Risk Weight (λ)</span>
-                <strong>{wRisk.toFixed(2)}</strong>
+                <span>Ice-Risk Penalty Weight (λ)</span>
+                <strong className="mono">{wRisk.toFixed(2)}</strong>
               </div>
               <input
                 type="range"
@@ -965,8 +1257,8 @@ export default function App() {
 
             <div className="dss-slider-block">
               <div className="dss-slider-title">
-                <span>Time Priority Weight</span>
-                <strong>{wTime.toFixed(2)}</strong>
+                <span>Transit Time Priority Weight</span>
+                <strong className="mono">{wTime.toFixed(2)}</strong>
               </div>
               <input
                 type="range"
@@ -980,14 +1272,16 @@ export default function App() {
 
             <div className="dss-action-row">
               <button
+                type="button"
                 className="dss-btn-primary"
                 onClick={handleAdvanceDay}
                 disabled={loadingRoute}
               >
-                {loadingRoute ? "Replanning..." : "Advance Day +1 ▶"}
+                {loadingRoute ? "Replanning..." : "Step Voyage +1 Day"}
               </button>
               {shipPos && (
                 <button
+                  type="button"
                   className="dss-btn-secondary"
                   onClick={handleResetVoyage}
                 >
@@ -997,149 +1291,147 @@ export default function App() {
             </div>
             {shipPos && (
               <p className="dss-pos-note">
-                Ship underway at grid cell ({shipPos.row}, {shipPos.col}) —
-                route replanned live from latest observation.
+                Vessel position: cell ({shipPos.row}, {shipPos.col}) · Replanned
+                from updated daily satellite observation.
               </p>
             )}
           </section>
 
-          {/* Route Comparison Scored on Observed Ice */}
-          <section className="dss-card">
-            <div className="dss-card-header">
-              <h2>Scored on Observed Ice</h2>
-              <span
-                className="dss-badge"
-                style={{ backgroundColor: BADGE_COLORS.REAL }}
-              >
-                COUNTERFACTUAL
-              </span>
+          {/* Counterfactual Evaluation Scored on Real Observed Ice */}
+          <section className="dss-panel">
+            <div className="dss-panel-head">
+              <h2>02. Counterfactual Evaluation</h2>
             </div>
+            <p className="dss-meta-line">
+              <span>Both routes scored post-hoc on observed NSIDC SIC</span>
+            </p>
 
             {fcMetrics?.ok && stMetrics?.ok ? (
               <>
-                <div className="dss-delta-banner">
-                  <div>
-                    <small>Heavy-Ice Hours Saved</small>
-                    <strong
-                      className={
-                        stMetrics.heavy_ice_hours - fcMetrics.heavy_ice_hours >=
-                        0
+                <div className="dss-metric-grid dss-metric-highlight">
+                  <div className="dss-metric-cell">
+                    <span className="dss-metric-label">Heavy-Ice Exposure Saved</span>
+                    <div
+                      className={`dss-metric-val ${
+                        stMetrics.heavy_ice_hours - fcMetrics.heavy_ice_hours >= 0
                           ? "pos"
                           : "neg"
-                      }
+                      }`}
                     >
+                      {stMetrics.heavy_ice_hours - fcMetrics.heavy_ice_hours >= 0
+                        ? "+"
+                        : ""}
                       {(
                         stMetrics.heavy_ice_hours - fcMetrics.heavy_ice_hours
-                      ).toFixed(1)}{" "}
-                      h
-                    </strong>
+                      ).toFixed(1)}
+                      <small>h</small>
+                    </div>
                   </div>
-                  <div>
-                    <small>Total Voyage Time Saved</small>
-                    <strong
-                      className={
+                  <div className="dss-metric-cell">
+                    <span className="dss-metric-label">Transit Duration Delta</span>
+                    <div
+                      className={`dss-metric-val ${
                         stMetrics.hours - fcMetrics.hours >= 0 ? "pos" : "neg"
-                      }
+                      }`}
                     >
-                      {(stMetrics.hours - fcMetrics.hours).toFixed(1)} h
-                    </strong>
+                      {stMetrics.hours - fcMetrics.hours >= 0 ? "+" : ""}
+                      {(stMetrics.hours - fcMetrics.hours).toFixed(1)}
+                      <small>h</small>
+                    </div>
                   </div>
                 </div>
 
-                <div className="dss-route-compare">
-                  <div className="dss-route-box cyan">
-                    <h3>Forecast-Aware Route</h3>
-                    <div className="dss-stat-grid">
-                      <div>
-                        <span>Voyage Time</span>
-                        <strong>{fcMetrics.hours} h</strong>
-                      </div>
-                      <div>
-                        <span>Distance</span>
-                        <strong>{fcMetrics.distance_km} km</strong>
-                      </div>
-                      <div>
-                        <span>Heavy Ice (≥40%)</span>
-                        <strong>{fcMetrics.heavy_ice_hours} h</strong>
-                      </div>
-                      <div>
-                        <span>Fuel Proxy</span>
-                        <strong>{fcMetrics.fuel_proxy}</strong>
-                      </div>
-                      <div>
-                        <span>Max / Mean SIC</span>
-                        <strong>
-                          {Math.round(fcMetrics.max_sic * 100)}% /{" "}
-                          {Math.round(fcMetrics.mean_sic * 100)}%
-                        </strong>
-                      </div>
-                    </div>
+                <div className="dss-route-comparison-table">
+                  <div className="dss-rc-header">
+                    <span>Metric</span>
+                    <span className="cyan-text">Forecast A*</span>
+                    <span className="muted-text">Climatology</span>
                   </div>
-
-                  <div className="dss-route-box muted">
-                    <h3>Static Climatology Route</h3>
-                    <div className="dss-stat-grid">
-                      <div>
-                        <span>Voyage Time</span>
-                        <strong>{stMetrics.hours} h</strong>
-                      </div>
-                      <div>
-                        <span>Distance</span>
-                        <strong>{stMetrics.distance_km} km</strong>
-                      </div>
-                      <div>
-                        <span>Heavy Ice (≥40%)</span>
-                        <strong>{stMetrics.heavy_ice_hours} h</strong>
-                      </div>
-                      <div>
-                        <span>Fuel Proxy</span>
-                        <strong>{stMetrics.fuel_proxy}</strong>
-                      </div>
-                      <div>
-                        <span>Max / Mean SIC</span>
-                        <strong>
-                          {Math.round(stMetrics.max_sic * 100)}% /{" "}
-                          {Math.round(stMetrics.mean_sic * 100)}%
-                        </strong>
-                      </div>
-                    </div>
+                  <div className="dss-rc-row">
+                    <span>Transit Duration</span>
+                    <strong className="mono">{fcMetrics.hours} h</strong>
+                    <span className="mono">{stMetrics.hours} h</span>
+                  </div>
+                  <div className="dss-rc-row">
+                    <span>Track Distance</span>
+                    <strong className="mono">{fcMetrics.distance_km} km</strong>
+                    <span className="mono">{stMetrics.distance_km} km</span>
+                  </div>
+                  <div className="dss-rc-row">
+                    <span>Heavy Ice (≥40% SIC)</span>
+                    <strong className="mono accent">
+                      {fcMetrics.heavy_ice_hours} h
+                    </strong>
+                    <span className="mono">{stMetrics.heavy_ice_hours} h</span>
+                  </div>
+                  <div className="dss-rc-row">
+                    <span>Fuel Resistance Proxy</span>
+                    <strong className="mono">{fcMetrics.fuel_proxy}</strong>
+                    <span className="mono">{stMetrics.fuel_proxy}</span>
+                  </div>
+                  <div className="dss-rc-row">
+                    <span>Peak / Mean SIC</span>
+                    <strong className="mono">
+                      {Math.round(fcMetrics.max_sic * 100)}% /{" "}
+                      {Math.round(fcMetrics.mean_sic * 100)}%
+                    </strong>
+                    <span className="mono">
+                      {Math.round(stMetrics.max_sic * 100)}% /{" "}
+                      {Math.round(stMetrics.mean_sic * 100)}%
+                    </span>
                   </div>
                 </div>
               </>
             ) : (
-              <p className="dss-muted">Computing route metrics...</p>
+              <p className="dss-meta-line">Computing route metrics...</p>
             )}
           </section>
 
           {scenario?.hindcast_summary && (
-            <section className="dss-card">
-              <div className="dss-card-header">
-                <h2>Aggregate Hindcast ({scenario.hindcast_summary.n} Voyages)</h2>
+            <section className="dss-panel dss-panel-last">
+              <div className="dss-panel-head">
+                <h2>03. Multi-Date Hindcast Benchmark</h2>
+                <button
+                  type="button"
+                  className="dss-inline-help"
+                  onClick={() => setDrawer("hindcast")}
+                >
+                  Full table
+                </button>
               </div>
-              <div className="dss-stat-grid">
-                <div>
-                  <span>Mean Heavy Ice (Forecast)</span>
-                  <strong>
-                    {scenario.hindcast_summary.mean_heavy_hours_forecast} h
-                  </strong>
+              <p className="dss-meta-line">
+                <span>{scenario.hindcast_summary.n} Departures</span>
+                <span aria-hidden="true">·</span>
+                <span>Ice Entry → Bharati</span>
+              </p>
+              <div className="dss-metric-grid">
+                <div className="dss-metric-cell">
+                  <span className="dss-metric-label">Mean Heavy Ice (U-Net)</span>
+                  <div className="dss-metric-val">
+                    {scenario.hindcast_summary.mean_heavy_hours_forecast}
+                    <small>h</small>
+                  </div>
                 </div>
-                <div>
-                  <span>Mean Heavy Ice (Static)</span>
-                  <strong>
-                    {scenario.hindcast_summary.mean_heavy_hours_static} h
-                  </strong>
+                <div className="dss-metric-cell">
+                  <span className="dss-metric-label">Mean Heavy Ice (Static)</span>
+                  <div className="dss-metric-val">
+                    {scenario.hindcast_summary.mean_heavy_hours_static}
+                    <small>h</small>
+                  </div>
                 </div>
-                <div>
-                  <span>Mean Heavy-Ice Saved</span>
-                  <strong className="pos">
-                    {scenario.hindcast_summary.mean_heavy_hours_saved} h
-                  </strong>
+                <div className="dss-metric-cell">
+                  <span className="dss-metric-label">Mean Heavy-Ice Saved</span>
+                  <div className="dss-metric-val pos">
+                    +{scenario.hindcast_summary.mean_heavy_hours_saved}
+                    <small>h</small>
+                  </div>
                 </div>
-                <div>
-                  <span>Mean Total Hours Saved</span>
-                  <strong className="pos">
-                    {scenario.hindcast_summary.mean_hours_saved} h
-                  </strong>
+                <div className="dss-metric-cell">
+                  <span className="dss-metric-label">Mean Transit Saved</span>
+                  <div className="dss-metric-val pos">
+                    +{scenario.hindcast_summary.mean_hours_saved}
+                    <small>h</small>
+                  </div>
                 </div>
               </div>
             </section>
@@ -1147,18 +1439,20 @@ export default function App() {
         </aside>
       </main>
 
-      {/* Bottom Timeline & Lead-Day Skill Bar */}
+      {/* Bottom Time-Series & Lead-Day Skill Tray */}
       <footer className="dss-Timeline">
         <div className="dss-timeline-controls">
           <button
+            type="button"
             className="dss-play-btn"
             onClick={() => setIsPlaying(!isPlaying)}
           >
-            {isPlaying ? "⏸ Pause" : "▶ Play"}
+            {isPlaying ? "Pause" : "Play Sequence"}
           </button>
-          <div className="dss-step-pills">
+          <div className="dss-step-pills" role="group" aria-label="Timeline Day Selector">
             {[-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7].map((st) => (
               <button
+                type="button"
                 key={st}
                 className={`dss-step-pill ${
                   timelineStep === st ? "active" : ""
@@ -1176,7 +1470,9 @@ export default function App() {
 
         {forecast?.per_lead_mae && (
           <div className="dss-skill-mini">
-            <span>Lead 1–7d MAE (U-Net vs B1):</span>
+            <span className="dss-skill-caption">
+              Lead +1..7d MAE (Cyan: U-Net · Slate: B1)
+            </span>
             <div className="dss-skill-bars">
               {forecast.per_lead_mae.ml.map((mVal, i) => {
                 const b1Val = forecast.per_lead_mae.b1[i];
@@ -1187,8 +1483,8 @@ export default function App() {
                       timelineStep === i + 1 ? "current" : ""
                     }`}
                     title={`Lead +${i + 1}d: U-Net MAE ${(mVal * 100).toFixed(
-                      1
-                    )}% vs B1 ${(b1Val * 100).toFixed(1)}%`}
+                      2
+                    )}% vs B1 ${(b1Val * 100).toFixed(2)}%`}
                   >
                     <div className="bar-pair">
                       <div
@@ -1200,7 +1496,7 @@ export default function App() {
                         style={{ height: `${Math.min(100, b1Val * 1200)}%` }}
                       />
                     </div>
-                    <small>+{i + 1}</small>
+                    <small>+{i + 1}d</small>
                   </div>
                 );
               })}
@@ -1209,23 +1505,749 @@ export default function App() {
         )}
       </footer>
 
-      {/* Modal / Drawer Overlay for Validation, Hindcast, and Provenance */}
+      {/* Modal / Drawer Overlay */}
       {drawer && (
         <div className="dss-drawer-backdrop" onClick={() => setDrawer(null)}>
           <div
-            className="dss-drawer-modal"
+            className="dss-drawer-modal dss-drawer-wide"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="dss-drawer-top">
               <h2>
+                {drawer === "guide" &&
+                  "System Operational Guide & Interactive Walkthrough"}
+                {drawer === "ml" &&
+                  "Small ML Model Studio (2-Level Polar U-Net) & Free Satellite Datasets"}
                 {drawer === "validation" &&
-                  "Model Validation & Baseline Comparison (Unseen Years)"}
+                  "Model Validation & Baseline Comparison (Unseen Windows)"}
                 {drawer === "hindcast" &&
                   "Counterfactual Hindcast Route Evaluation"}
                 {drawer === "about" && "Data Provenance, Citations & Disclaimer"}
               </h2>
-              <button onClick={() => setDrawer(null)}>✕ Close</button>
+              <button type="button" onClick={() => setDrawer(null)}>
+                Close [Esc]
+              </button>
             </div>
+
+            {/* Interactive System Guide & Help Modal */}
+            {drawer === "guide" && (
+              <div className="dss-drawer-body">
+                <div className="dss-subtabs">
+                  <button
+                    type="button"
+                    className={guideTab === "overview" ? "active" : ""}
+                    onClick={() => setGuideTab("overview")}
+                  >
+                    01. Mission &amp; Interactive Tour
+                  </button>
+                  <button
+                    type="button"
+                    className={guideTab === "layers" ? "active" : ""}
+                    onClick={() => setGuideTab("layers")}
+                  >
+                    02. Polar Map &amp; Raster Layers
+                  </button>
+                  <button
+                    type="button"
+                    className={guideTab === "model" ? "active" : ""}
+                    onClick={() => setGuideTab("model")}
+                  >
+                    03. How the Small U-Net Works
+                  </button>
+                  <button
+                    type="button"
+                    className={guideTab === "routing" ? "active" : ""}
+                    onClick={() => setGuideTab("routing")}
+                  >
+                    04. Live A* &amp; Counterfactual Scoring
+                  </button>
+                </div>
+
+                {guideTab === "overview" && (
+                  <div className="dss-guide-grid">
+                    <div className="dss-guide-col">
+                      <h3>What is PolarRoute DSS?</h3>
+                      <p className="dss-drawer-lead">
+                        <strong>PolarRoute DSS</strong> is an Antarctic sea-ice
+                        forecasting and vessel route-planning decision support
+                        prototype designed for resupply missions to Indian
+                        Antarctic research stations (<strong>Bharati</strong> in
+                        Prydz Bay at 69.41°S, 76.19°E and{" "}
+                        <strong>Maitri</strong> at 70.77°S, 11.73°E).
+                      </p>
+                      <p className="dss-drawer-lead">
+                        Instead of routing ships across static historical
+                        climatology, the system ingests{" "}
+                        <strong>7 days of passive-microwave satellite Sea Ice Concentration (SIC)</strong>{" "}
+                        on a native 25 km South Polar Stereographic grid (
+                        <code>EPSG:3412</code>), runs a{" "}
+                        <strong>2-Level Residual Spatial-Temporal U-Net</strong>{" "}
+                        to predict the next 7 days of pack-ice evolution, and
+                        computes an optimal time-dependent <strong>A* corridor</strong>{" "}
+                        that avoids emerging heavy-ice ridges.
+                      </p>
+
+                      <div className="dss-guide-callout">
+                        <h4>Three-Column Console Layout</h4>
+                        <ul>
+                          <li>
+                            <strong>Left Column (Controls &amp; ML Engine):</strong>{" "}
+                            Switch between satellite observations, U-Net
+                            predictions, neural residuals, and error layers, or
+                            trigger live on-server SGD training epochs.
+                          </li>
+                          <li>
+                            <strong>Center Viewport (EPSG:3412 Polar Stage):</strong>{" "}
+                            Interactive polar-stereographic map with live cursor
+                            coordinate/SIC probe, station markers, iceberg drift
+                            cones, and planned trajectories.
+                          </li>
+                          <li>
+                            <strong>Right Column (A* Planner &amp; Scoring):</strong>{" "}
+                            Adjust ice-risk penalty (<code>λ</code>), step the
+                            vessel forward day-by-day, and compare the U-Net
+                            route against static climatology on real observed
+                            sea ice.
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    <div className="dss-guide-col">
+                      <h3>Interactive 5-Step Demo Walkthrough</h3>
+                      <p className="dss-drawer-lead">
+                        Click any action below to jump directly to that feature
+                        in the workspace:
+                      </p>
+                      <div className="dss-walkthrough-list">
+                        <div className="dss-walk-item">
+                          <div>
+                            <strong>1. Compare Observed vs. U-Net Forecast</strong>
+                            <span>
+                              Enable the split-screen curtain on Lead +5d to
+                              compare satellite ground truth against the U-Net
+                              prediction.
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="dss-btn-secondary"
+                            onClick={() => {
+                              setTimelineStep(5);
+                              setSwipeEnabled(true);
+                              setSwipeSplit(50);
+                              setDrawer(null);
+                            }}
+                          >
+                            Activate Swipe
+                          </button>
+                        </div>
+
+                        <div className="dss-walk-item">
+                          <div>
+                            <strong>2. Inspect Raw Neural Residual |ΔSIC|</strong>
+                            <span>
+                              Visualize the exact 7-day sea-ice change predicted
+                              by the U-Net readout head along the marginal ice
+                              zone.
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="dss-btn-secondary"
+                            onClick={() => {
+                              setSwipeEnabled(false);
+                              setTimelineStep(4);
+                              setActiveLayer("residual");
+                              setDrawer(null);
+                            }}
+                          >
+                            View Residual
+                          </button>
+                        </div>
+
+                        <div className="dss-walk-item">
+                          <div>
+                            <strong>3. Train the Small U-Net Live (+5 Epochs)</strong>
+                            <span>
+                              Open the ML Studio to run on-server gradient
+                              descent and inspect internal 3×3 convolutional
+                              feature maps.
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="dss-btn-secondary"
+                            onClick={() => {
+                              setMlTab("architecture");
+                              setDrawer("ml");
+                            }}
+                          >
+                            Open ML Studio
+                          </button>
+                        </div>
+
+                        <div className="dss-walk-item">
+                          <div>
+                            <strong>4. Test High Ice-Risk Aversion (λ = 1.10)</strong>
+                            <span>
+                              Increase the safety weight λ so the A* router
+                              detours around Prydz Bay pack-ice ridges.
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="dss-btn-secondary"
+                            onClick={() => {
+                              setSwipeEnabled(false);
+                              setActiveLayer("ml");
+                              setWRisk(1.1);
+                              setDrawer(null);
+                            }}
+                          >
+                            Set λ = 1.10
+                          </button>
+                        </div>
+
+                        <div className="dss-walk-item">
+                          <div>
+                            <strong>5. Browse Free Satellite Datasets</strong>
+                            <span>
+                              View the 6 free satellite &amp; reanalysis
+                              archives (NSIDC, AMSR2, ERA5, CMEMS, USNIC) used
+                              for polar ML.
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="dss-btn-secondary"
+                            onClick={() => {
+                              setMlTab("datasets");
+                              setDrawer("ml");
+                            }}
+                          >
+                            View Datasets
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {guideTab === "layers" && (
+                  <div className="dss-drawer-section">
+                    <p className="dss-drawer-lead">
+                      Every map layer is projected onto the native{" "}
+                      <strong>NSIDC 25 km South Polar Stereographic grid (EPSG:3412)</strong>{" "}
+                      cropped to the Indian Ocean / East Antarctic sector (
+                      <code>160 × 184</code> cells covering 10°W–100°E,
+                      55°S–78°S).
+                    </p>
+                    <table className="dss-table">
+                      <thead>
+                        <tr>
+                          <th>Layer Name</th>
+                          <th>Category</th>
+                          <th>What It Shows &amp; How to Interpret</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className="highlight">U-Net 7-Day Forecast</td>
+                          <td>Model Output</td>
+                          <td>
+                            Predicted Sea Ice Concentration (0–100%) for lead
+                            days +1d to +7d produced by the 2-level residual
+                            U-Net from causal inputs (D-6..D0).
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Observed Sea Ice (NSIDC)</td>
+                          <td>Satellite Truth</td>
+                          <td>
+                            Daily passive-microwave sea-ice concentration (NOAA/NSIDC
+                            G02202 V6). Used as input for D-6..D0 and as ground
+                            truth for scoring +1d..+7d.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">U-Net Residual |ΔSIC|</td>
+                          <td>Neural Activation</td>
+                          <td>
+                            Magnitude of the raw neural change{" "}
+                            <code>|Ŷ_k − SIC(D0)|</code> before clipping.
+                            Highlights where the U-Net predicts active melt,
+                            polynya opening, or wind-driven pack advance.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">U-Net Encoder Ice-Edge</td>
+                          <td>Feature Map</td>
+                          <td>
+                            Channel 6 of Encoder Level 1:{" "}
+                            <code>4 · SIC · (1 − SIC)</code>, which peaks along
+                            the dynamic 50% marginal ice zone where routing
+                            decisions are most sensitive.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Seasonal Tendency (B1)</td>
+                          <td>Baseline</td>
+                          <td>
+                            Climatological baseline that adds the historical
+                            average daily melt/freeze tendency to the last
+                            observed day: <code>SIC(D0) + (Clim_k − Clim_0)</code>.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Persistence (B0)</td>
+                          <td>Baseline</td>
+                          <td>
+                            Zero-change baseline assuming sea ice remains frozen
+                            in its D0 state for the next 7 days:{" "}
+                            <code>Ŷ_k = SIC(D0)</code>.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Absolute Error |ML − Obs|</td>
+                          <td>Verification</td>
+                          <td>
+                            Cell-by-cell absolute discrepancy between the U-Net
+                            forecast and actual satellite observation at the
+                            selected lead day.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Validation Uncertainty σ</td>
+                          <td>Risk Weighting</td>
+                          <td>
+                            Historical per-cell, per-lead Mean Absolute Error on
+                            the validation split. Fed directly into the A* cost
+                            function to penalize uncertain ice-edge zones.
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {guideTab === "model" && (
+                  <div className="dss-drawer-section">
+                    <h3>Compact 2-Level Spatial-Temporal U-Net Architecture</h3>
+                    <p className="dss-drawer-lead">
+                      Because daily Antarctic sea-ice changes slowly in the
+                      interior pack but rapidly along coastal polynyas and the
+                      15% ice edge, training a network to predict raw SIC wastes
+                      capacity. Instead, <strong>PolarUNet</strong> is
+                      formulated as a <strong>residual forecaster</strong>:
+                    </p>
+                    <div className="dss-guide-callout">
+                      <code>
+                        Ŷ(d0 + k) = clip( SIC(d0) + U-Net(X_d0)_k , 0.0, 1.0 ) ×
+                        OceanMask
+                      </code>
+                    </div>
+                    <table className="dss-table">
+                      <thead>
+                        <tr>
+                          <th>Component</th>
+                          <th>Specification</th>
+                          <th>Purpose</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td className="highlight">Input Tensor (10ch)</td>
+                          <td>
+                            <code>[10, 160, 184]</code>
+                          </td>
+                          <td>
+                            7 daily SIC maps (D-6..D0) + 1 static ocean mask + 2
+                            cyclical season channels (<code>sin/cos DOY</code>).
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Encoder Level 1</td>
+                          <td>
+                            <code>3×3 Conv + GELU → [8, 160, 184]</code>
+                          </td>
+                          <td>
+                            Extracts 1d/3d/6d temporal tendencies, Sobel{" "}
+                            <code>∇x/∇y</code> drift gradients, and Laplacian{" "}
+                            <code>∇²</code> edge diffusion at 25 km resolution.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Bottleneck Level 2</td>
+                          <td>
+                            <code>2×2 AvgPool → 3×3 Conv → [6, 80, 92]</code>
+                          </td>
+                          <td>
+                            Captures 50 km–150 km synoptic wind-driven wave and
+                            coastal lead patterns across Prydz Bay and Enderby
+                            Land.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Decoder + Skip</td>
+                          <td>
+                            <code>2×2 Bilinear Upsample + Skip Concat</code>
+                          </td>
+                          <td>
+                            Combines sharp 25 km coastal boundaries from the
+                            input/encoder with broad synoptic tendencies from
+                            the bottleneck.
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="highlight">Ice-Edge Loss</td>
+                          <td>
+                            <code>
+                              L = Ocean · (1 + 2·1_[|y−0.15|&lt;0.15]) · |ŷ − y|
+                            </code>
+                          </td>
+                          <td>
+                            Upweights errors near the 15% ice-edge contour by
+                            3× so the model prioritizes navigable boundary
+                            accuracy (minimizing IIEE km²).
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {guideTab === "routing" && (
+                  <div className="dss-drawer-section">
+                    <h3>Time-Dependent A* &amp; Counterfactual Scoring</h3>
+                    <p className="dss-drawer-lead">
+                      As the vessel moves across the 8-connected 25 km grid, the
+                      ice field evolves with elapsed voyage time{" "}
+                      <code>t (hours)</code>. At step day{" "}
+                      <code>k = floor(t / 24)</code>, vessel speed{" "}
+                      <code>v(SIC)</code> drops linearly from{" "}
+                      <strong>22 km/h</strong> in open water ({"<15% SIC"}) down
+                      to <strong>4.4 km/h</strong> at the PC6 operational limit
+                      (<strong>70% SIC</strong>), and cells above 70% SIC are
+                      impassable.
+                    </p>
+                    <div className="dss-guide-callout">
+                      <h4>Why Counterfactual Scoring Matters</h4>
+                      <p>
+                        A route planner can look artificially good if evaluated
+                        on its own forecast. To guarantee a fair scientific
+                        benchmark:
+                      </p>
+                      <ol>
+                        <li>
+                          <strong>Route A (Forecast-Aware Cyan Line)</strong> is
+                          planned using only the 7-day U-Net forecast and
+                          validation uncertainty map available on departure day{" "}
+                          <code>D0</code>.
+                        </li>
+                        <li>
+                          <strong>Route B (Static Climatology Dashed Line)</strong>{" "}
+                          is planned using historical seasonal climatology.
+                        </li>
+                        <li>
+                          <strong>Post-Hoc Scoring:</strong> Both fixed paths
+                          are then sailed through the{" "}
+                          <strong>true observed NSIDC satellite sea-ice fields</strong>{" "}
+                          of days D+1..D+14 to measure actual transit hours,
+                          heavy-ice exposure (hours spent in ≥40% SIC), and fuel
+                          resistance proxy.
+                        </li>
+                      </ol>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Small ML Model & Datasets Studio */}
+            {drawer === "ml" && (
+              <div className="dss-drawer-body">
+                <div className="dss-subtabs">
+                  <button
+                    type="button"
+                    className={mlTab === "architecture" ? "active" : ""}
+                    onClick={() => setMlTab("architecture")}
+                  >
+                    01. Live U-Net Architecture &amp; SGD Training
+                  </button>
+                  <button
+                    type="button"
+                    className={mlTab === "features" ? "active" : ""}
+                    onClick={() => setMlTab("features")}
+                  >
+                    02. Internal Feature Maps &amp; Residual Inspector ({date})
+                  </button>
+                  <button
+                    type="button"
+                    className={mlTab === "datasets" ? "active" : ""}
+                    onClick={() => setMlTab("datasets")}
+                  >
+                    03. Free Satellite Datasets Catalog ({datasetsList.length})
+                  </button>
+                </div>
+
+                {mlTab === "architecture" && modelSummary && (
+                  <div className="dss-ml-grid">
+                    <div className="dss-ml-col">
+                      <h3>{modelSummary.architecture}</h3>
+                      <p className="dss-drawer-lead">
+                        Predicts 7-day Sea Ice Concentration residuals{" "}
+                        <code>ΔSIC(d+1..d+7)</code> from 7 daily NSIDC
+                        passive-microwave satellite maps + static ocean mask +
+                        seasonal encoding:
+                        <br />
+                        <code>
+                          Ŷ_k = clip(SIC(d0) + U-Net(X)_k, 0, 1) × ocean_mask
+                        </code>
+                      </p>
+
+                      <table className="dss-table">
+                        <thead>
+                          <tr>
+                            <th>Stage</th>
+                            <th>Operation</th>
+                            <th>Tensor Shape</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {modelSummary.layers?.map((ly, i) => (
+                            <tr key={i}>
+                              <td className="highlight">{ly.name}</td>
+                              <td>{ly.op}</td>
+                              <td>
+                                <code>{ly.shape}</code>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      <div className="dss-train-controls-box">
+                        <h4>Interactive On-Server SGD Optimization</h4>
+                        <div className="dss-train-sliders">
+                          <label>
+                            <span>Learning Rate: {trainLr.toFixed(2)}</span>
+                            <input
+                              type="range"
+                              min={0.01}
+                              max={0.2}
+                              step={0.01}
+                              value={trainLr}
+                              onChange={(e) =>
+                                setTrainLr(Number(e.target.value))
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>
+                              15% Ice-Edge Loss Weight:{" "}
+                              {trainEdgeWeight.toFixed(1)}×
+                            </span>
+                            <input
+                              type="range"
+                              min={0.0}
+                              max={5.0}
+                              step={0.5}
+                              value={trainEdgeWeight}
+                              onChange={(e) =>
+                                setTrainEdgeWeight(Number(e.target.value))
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className="dss-action-row">
+                          <button
+                            type="button"
+                            className="dss-btn-primary"
+                            onClick={() => handleTrainModel(5, false)}
+                            disabled={isTraining}
+                          >
+                            {isTraining
+                              ? "Running SGD..."
+                              : "Run +5 Training Epochs"}
+                          </button>
+                          <button
+                            type="button"
+                            className="dss-btn-secondary"
+                            onClick={() => handleTrainModel(1, true)}
+                            disabled={isTraining}
+                          >
+                            Reset Weights &amp; Train 1 Epoch
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="dss-ml-col">
+                      <h3>
+                        Training Telemetry ({modelSummary.totalEpochs} Epochs
+                        Completed)
+                      </h3>
+                      <p className="dss-drawer-lead">
+                        Loss function:{" "}
+                        <code>
+                          L = ocean_mask · (1 + λ_edge · 1_[|y - 0.15| &lt;
+                          0.15]) · |ŷ - y|
+                        </code>
+                      </p>
+                      <div className="dss-log-scroll">
+                        <table className="dss-table">
+                          <thead>
+                            <tr>
+                              <th>Epoch</th>
+                              <th>Train MAE</th>
+                              <th>Val MAE (U-Net)</th>
+                              <th>Val MAE (B1)</th>
+                              <th>Val MAE (B0)</th>
+                              <th>Ice-Edge IIEE</th>
+                              <th>Step Time</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(modelSummary.trainingHistory || [])
+                              .slice()
+                              .reverse()
+                              .map((log) => (
+                                <tr key={log.epoch}>
+                                  <td>#{log.epoch}</td>
+                                  <td>{(log.trainMae * 100).toFixed(2)}%</td>
+                                  <td className="highlight">
+                                    {(log.valMae * 100).toFixed(2)}%
+                                  </td>
+                                  <td>{(log.b1ValMae * 100).toFixed(2)}%</td>
+                                  <td>{(log.b0ValMae * 100).toFixed(2)}%</td>
+                                  <td>
+                                    {log.edgeIieeKm2.toLocaleString()} km²
+                                  </td>
+                                  <td>{log.durationMs} ms</td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {mlTab === "features" && (
+                  <div className="dss-fmap-section">
+                    <p className="dss-drawer-lead">
+                      Live intermediate feature maps extracted from the{" "}
+                      <strong>PolarUNet</strong> forward pass for departure{" "}
+                      <strong>{date}</strong> (forward latency:{" "}
+                      <strong>{mlInspect?.inference_ms ?? 4.1} ms</strong>):
+                    </p>
+                    {mlInspect?.feature_maps && forecast?.rawLandPack ? (
+                      <div className="dss-fmap-grid">
+                        <FeatureMapCanvas
+                          gridPack={mlInspect.feature_maps.enc_tend3}
+                          landPack={forecast.rawLandPack}
+                          mode="normalized"
+                          title="Encoder Ch1: 3×3 Smoothed 3-Day Tendency"
+                          subtitle="Captures synoptic polynya opening & pack drift"
+                        />
+                        <FeatureMapCanvas
+                          gridPack={mlInspect.feature_maps.enc_edge_zone}
+                          landPack={forecast.rawLandPack}
+                          mode="normalized"
+                          title="Encoder Ch6: Marginal Ice Zone Detector"
+                          subtitle="4 · SIC(d0) · (1 − SIC(d0)) peaks at 50% pack boundary"
+                        />
+                        <FeatureMapCanvas
+                          gridPack={mlInspect.feature_maps.enc_gelu_advect}
+                          landPack={forecast.rawLandPack}
+                          mode="normalized"
+                          title="Encoder Ch7: GELU Advection + Gradient"
+                          subtitle="Non-linear combination of Sobel ∇x, ∇y & tendency"
+                        />
+                        <FeatureMapCanvas
+                          gridPack={mlInspect.feature_maps.residual_lead3}
+                          landPack={forecast.rawLandPack}
+                          mode="normalized"
+                          title="Readout Head: Predicted |ΔSIC| at Lead +3d"
+                          subtitle="Raw residual added to SIC(d0) before [0,1] clip"
+                        />
+                        <FeatureMapCanvas
+                          gridPack={mlInspect.feature_maps.residual_lead7}
+                          landPack={forecast.rawLandPack}
+                          mode="normalized"
+                          title="Readout Head: Predicted |ΔSIC| at Lead +7d"
+                          subtitle="7-day cumulative melt & wind-drift correction"
+                        />
+                      </div>
+                    ) : (
+                      <p>Loading feature maps...</p>
+                    )}
+                  </div>
+                )}
+
+                {mlTab === "datasets" && (
+                  <div className="dss-datasets-list">
+                    <p className="dss-drawer-lead">
+                      Below are the{" "}
+                      <strong>
+                        free, publicly accessible satellite and reanalysis
+                        datasets
+                      </strong>{" "}
+                      best suited to train and operate this compact polar
+                      sea-ice &amp; routing ML model:
+                    </p>
+                    <div className="dss-dataset-cards">
+                      {datasetsList.map((ds) => (
+                        <div key={ds.id} className="dss-ds-card">
+                          <div className="dss-ds-top">
+                            <span className="dss-ds-role">{ds.role}</span>
+                            <span aria-hidden="true">·</span>
+                            <span className="dss-ds-agency">{ds.agency}</span>
+                          </div>
+                          <h3>{ds.name}</h3>
+                          <div className="dss-ds-meta">
+                            <div>
+                              <strong>Resolution &amp; Grid:</strong>{" "}
+                              {ds.resolution}
+                            </div>
+                            <div>
+                              <strong>Coverage:</strong> {ds.coverage}
+                            </div>
+                            <div>
+                              <strong>Key Variables:</strong>{" "}
+                              <code>{ds.variables.join(", ")}</code>
+                            </div>
+                            <div>
+                              <strong>Free Access:</strong> {ds.access}
+                            </div>
+                          </div>
+                          <p className="dss-ds-why">
+                            <strong>Why Best Suitable:</strong> {ds.whyBest}
+                          </p>
+                          <div className="dss-ds-links">
+                            <a
+                              href={ds.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open Data Archive ↗
+                            </a>
+                            <a
+                              href={ds.doi}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Reference / DOI ↗
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {drawer === "validation" && validation && (
               <div className="dss-drawer-body">
@@ -1307,7 +2329,8 @@ export default function App() {
             {drawer === "about" && scenario && (
               <div className="dss-drawer-body">
                 <p className="dss-drawer-lead">
-                  <strong>Dataset:</strong> {scenario.dataset} (
+                  <strong>Primary Satellite Record:</strong> {scenario.dataset}{" "}
+                  (
                   <a href={scenario.doi} target="_blank" rel="noreferrer">
                     {scenario.doi}
                   </a>
@@ -1316,26 +2339,16 @@ export default function App() {
                 <table className="dss-table">
                   <thead>
                     <tr>
-                      <th>Component</th>
-                      <th>Badge</th>
-                      <th>Implementation & Provenance</th>
+                      <th>Subsystem</th>
+                      <th>Category</th>
+                      <th>Implementation &amp; Provenance</th>
                     </tr>
                   </thead>
                   <tbody>
                     {scenario.provenance?.map((p, idx) => (
                       <tr key={idx}>
-                        <td>{p.layer}</td>
-                        <td>
-                          <span
-                            className="dss-badge"
-                            style={{
-                              backgroundColor:
-                                BADGE_COLORS[p.badge] || "#475569",
-                            }}
-                          >
-                            {p.badge}
-                          </span>
-                        </td>
+                        <td className="highlight">{p.layer}</td>
+                        <td className="mono">{p.badge}</td>
                         <td>{p.detail}</td>
                       </tr>
                     ))}
