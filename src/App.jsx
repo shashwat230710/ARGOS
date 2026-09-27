@@ -793,7 +793,7 @@ export default function App() {
           }}
           className="dss-wordmark"
         >
-          PolarRoute DSS
+          {scenario?.title || "ARGOS"}
         </a>
 
         {/* Zone 2: Clean single-line text navigation links */}
@@ -1566,9 +1566,9 @@ export default function App() {
                 {guideTab === "overview" && (
                   <div className="dss-guide-grid">
                     <div className="dss-guide-col">
-                      <h3>What is PolarRoute DSS?</h3>
+                      <h3>What is ARGOS?</h3>
                       <p className="dss-drawer-lead">
-                        <strong>PolarRoute DSS</strong> is an Antarctic sea-ice
+                        <strong>ARGOS (Antarctic Route Guidance &amp; Operational Sea-Ice DSS)</strong> is an Antarctic sea-ice
                         forecasting and vessel route-planning decision support
                         prototype designed for resupply missions to Indian
                         Antarctic research stations (<strong>Bharati</strong> in

@@ -1151,8 +1151,8 @@ async function startServer() {
       ? DEMO_D0
       : DATA.availableD0[Math.floor(DATA.availableD0.length / 2)];
     res.json({
-      title: "PolarRoute DSS",
-      subtitle: "Cape Town → Bharati → Maitri  ·  hindcast replay",
+      title: "ARGOS",
+      subtitle: "Antarctic Route Guidance & Operational Sea-Ice DSS · Cape Town → Bharati → Maitri",
       ship: { name: SHIP_NAME, klass: SHIP_CLASS },
       disclaimer: "Prototype — decision-support demo, not for real navigation.",
       dataset: DATASET_NAME,
