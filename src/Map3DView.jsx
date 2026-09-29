@@ -39,7 +39,7 @@ const Map3DView = forwardRef(function Map3DView(
     showStations,
     showGraticule,
     showRoads = false,
-    showWeatherFigures = true,
+    showWeatherFigures = false,
     weatherOverlays = null,
     showH3Grid = false,
     h3Cells = [],

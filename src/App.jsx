@@ -277,7 +277,7 @@ export default function App() {
   const [showStations, setShowStations] = useState(true);
   const [showGraticule, setShowGraticule] = useState(false);
   const [showRoads, setShowRoads] = useState(false);
-  const [showWeatherFigures, setShowWeatherFigures] = useState(true);
+  const [showWeatherFigures, setShowWeatherFigures] = useState(false);
   const [showH3Grid, setShowH3Grid] = useState(false);
   const [cameraRadius3d, setCameraRadius3d] = useState(158);
   const [zoom2d, setZoom2d] = useState(2.5);
