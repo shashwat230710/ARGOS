@@ -1904,13 +1904,37 @@ td.neg {
 }
 
 .dss-3d-label.kind-ship {
-  border-color: #facc15;
-  background: rgba(23, 18, 7, 0.92);
-  box-shadow: 0 0 10px rgba(250, 204, 21, 0.3);
+  border: 1.5px solid #a3e635;
+  background: rgba(15, 28, 6, 0.95);
+  box-shadow: 0 0 16px rgba(163, 230, 53, 0.55);
+  padding: 3px 8px;
+  z-index: 12;
 }
 
 .dss-3d-label.kind-ship .dss-3d-lbl-title {
-  color: #fde047;
+  color: #d9f99d;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.dss-3d-label.kind-weather-current {
+  border-color: rgba(129, 140, 248, 0.75);
+  background: rgba(10, 16, 36, 0.88);
+}
+
+.dss-3d-label.kind-weather-current .dss-3d-lbl-title {
+  color: #a5b4fc;
+  font-size: 8.5px;
+}
+
+.dss-3d-label.kind-weather-zone {
+  border-color: rgba(249, 115, 22, 0.82);
+  background: rgba(34, 14, 6, 0.9);
+}
+
+.dss-3d-label.kind-weather-zone .dss-3d-lbl-title {
+  color: #fdba74;
+  font-size: 8.5px;
 }
 
 .dss-3d-label.kind-destination {
@@ -2288,8 +2312,8 @@ td.neg {
 }
 
 .swatch-dot.ship {
-  background: #f59e0b;
-  border: 1.5px solid #fef08a;
+  background: #a3e635;
+  border: 1.5px solid #ecfccb;
 }
 
 .swatch-dot.station {

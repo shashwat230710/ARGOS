@@ -24,6 +24,7 @@ import {
   VESSEL_PRESETS,
   computeRouteFuelAndSafety,
   computePolarRiskFields,
+  buildWeatherEffectOverlays,
   getAdaptiveH3Resolution,
   buildAdaptiveH3Grid,
 } from "./polarRiskAndH3.js";
@@ -208,26 +209,26 @@ function ShipBridgeScope({
     const uy = -dy / len; // canvas Y is inverted relative to EPSG:3412 Y
 
     ctx.beginPath();
-    ctx.strokeStyle = "#fde047";
-    ctx.lineWidth = 1.8;
+    ctx.strokeStyle = "#a3e635";
+    ctx.lineWidth = 2.2;
     ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + ux * 36, cy + uy * 36);
+    ctx.lineTo(cx + ux * 40, cy + uy * 40);
     ctx.stroke();
 
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(Math.atan2(ux, -uy));
     ctx.beginPath();
-    ctx.moveTo(0, -9);
-    ctx.lineTo(5.5, 2);
-    ctx.lineTo(4.5, 8);
-    ctx.lineTo(-4.5, 8);
-    ctx.lineTo(-5.5, 2);
+    ctx.moveTo(0, -12);
+    ctx.lineTo(7.5, 2.5);
+    ctx.lineTo(6.0, 10.5);
+    ctx.lineTo(-6.0, 10.5);
+    ctx.lineTo(-7.5, 2.5);
     ctx.closePath();
-    ctx.fillStyle = "#f59e0b";
+    ctx.fillStyle = "#a3e635";
     ctx.fill();
-    ctx.strokeStyle = "#fef3c7";
-    ctx.lineWidth = 1.3;
+    ctx.strokeStyle = "#ecfccb";
+    ctx.lineWidth = 1.6;
     ctx.stroke();
     ctx.restore();
 
@@ -276,6 +277,7 @@ export default function App() {
   const [showStations, setShowStations] = useState(true);
   const [showGraticule, setShowGraticule] = useState(false);
   const [showRoads, setShowRoads] = useState(false);
+  const [showWeatherFigures, setShowWeatherFigures] = useState(true);
   const [showH3Grid, setShowH3Grid] = useState(false);
   const [cameraRadius3d, setCameraRadius3d] = useState(158);
   const [zoom2d, setZoom2d] = useState(2.5);
@@ -878,6 +880,23 @@ export default function App() {
     vesselProfile,
   ]);
 
+  const weatherOverlays = useMemo(() => {
+    if (!scenario || !currentSicSlice || !polarRiskFields) return null;
+    return buildWeatherEffectOverlays({
+      scenario,
+      sicSlice: currentSicSlice,
+      surfaceTypeGrid,
+      polarRiskFields,
+      timelineStep,
+    });
+  }, [
+    scenario,
+    currentSicSlice,
+    surfaceTypeGrid,
+    polarRiskFields,
+    timelineStep,
+  ]);
+
   const h3Resolution = useMemo(
     () => getAdaptiveH3Resolution(viewMode, cameraRadius3d, zoom2d),
     [viewMode, cameraRadius3d, zoom2d]
@@ -1239,7 +1258,140 @@ export default function App() {
         src.addFeature(headFeat);
       }
     }
-  }, [forecast, timelineStep, showIceContours, showIceVectors]);
+
+    // 5. Weather & Ocean Figures on 2D Chart (High Ocean Currents, Katabatic/Gale Winds, Swell Waves & Polar Low Zones)
+    if (showWeatherFigures && weatherOverlays) {
+      // 5a. Severe Weather & Katabatic Gale Zones
+      if (weatherOverlays.weatherZones?.length) {
+        for (const wz of weatherOverlays.weatherZones) {
+          const wzFeat = new Feature({
+            geometry: new Polygon([wz.ringXy]),
+            inspect: wz.inspect,
+          });
+          wzFeat.setStyle(
+            new Style({
+              fill: new Fill({ color: "rgba(249, 115, 22, 0.11)" }),
+              stroke: new Stroke({
+                color: "rgba(251, 146, 60, 0.85)",
+                width: 1.8,
+                lineDash: [6, 4],
+              }),
+              text: new TextStyle({
+                text: `WX: ${wz.title.split("&")[0].trim().toUpperCase()}`,
+                font: "600 9px 'JetBrains Mono', monospace",
+                fill: new Fill({ color: "#fdba74" }),
+                stroke: new Stroke({ color: "#07090e", width: 3 }),
+              }),
+            })
+          );
+          src.addFeature(wzFeat);
+        }
+      }
+
+      // 5b. High Ocean Currents (Antarctic Coastal Current & ACC Streamlines)
+      if (weatherOverlays.currentStreamlines?.length) {
+        weatherOverlays.currentStreamlines.forEach((cur, idx) => {
+          const curFeat = new Feature({
+            geometry: new LineString(cur.pts),
+            inspect: cur.inspect,
+          });
+          const curColor = cur.isCoastalCurrent
+            ? "rgba(56, 189, 248, 0.86)"
+            : "rgba(129, 140, 248, 0.86)";
+          curFeat.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: curColor,
+                width: 2.3,
+              }),
+              text:
+                idx % 5 === 0
+                  ? new TextStyle({
+                      text: cur.isCoastalCurrent
+                        ? `COASTAL CURRENT · ${(cur.speedMs * 100).toFixed(0)} cm/s W`
+                        : `HIGH CURRENT (ACC) · ${(cur.speedMs * 100).toFixed(0)} cm/s E`,
+                      font: "600 8.5px 'JetBrains Mono', monospace",
+                      fill: new Fill({
+                        color: cur.isCoastalCurrent ? "#7dd3fc" : "#c7d2fe",
+                      }),
+                      stroke: new Stroke({ color: "#07090e", width: 2.8 }),
+                      offsetY: -8,
+                    })
+                  : undefined,
+            })
+          );
+          src.addFeature(curFeat);
+        });
+      }
+
+      // 5c. Strong 10m Wind Vectors (U10 Katabatic & Polar Gales)
+      if (weatherOverlays.windArrows?.length) {
+        for (const w of weatherOverlays.windArrows) {
+          const dx = w.x1 - w.x0;
+          const dy = w.y1 - w.y0;
+          const len = Math.hypot(dx, dy) || 1;
+          const ux = dx / len;
+          const uy = dy / len;
+          const ah = 20000;
+          const wColor = w.isSevere
+            ? "rgba(251, 146, 60, 0.88)"
+            : "rgba(192, 132, 252, 0.82)";
+          const wFeat = new Feature({
+            geometry: new LineString([
+              [w.x0, w.y0],
+              [w.x1, w.y1],
+              [w.x1 - ux * ah - uy * (ah * 0.48), w.y1 - uy * ah + ux * (ah * 0.48)],
+              [w.x1, w.y1],
+              [w.x1 - ux * ah + uy * (ah * 0.48), w.y1 - uy * ah - ux * (ah * 0.48)],
+            ]),
+            inspect: w.inspect,
+          });
+          wFeat.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: wColor,
+                width: 1.7,
+              }),
+            })
+          );
+          src.addFeature(wFeat);
+        }
+      }
+
+      // 5d. High Wave Swell Chevrons
+      if (weatherOverlays.waveIndicators?.length) {
+        for (const wv of weatherOverlays.waveIndicators) {
+          const wvStyle = new Style({
+            stroke: new Stroke({
+              color: wv.isRough
+                ? "rgba(244, 63, 94, 0.82)"
+                : "rgba(56, 189, 248, 0.72)",
+              width: 1.6,
+            }),
+          });
+          const f1 = new Feature({
+            geometry: new LineString(wv.crest1),
+            inspect: wv.inspect,
+          });
+          const f2 = new Feature({
+            geometry: new LineString(wv.crest2),
+            inspect: wv.inspect,
+          });
+          f1.setStyle(wvStyle);
+          f2.setStyle(wvStyle);
+          src.addFeature(f1);
+          src.addFeature(f2);
+        }
+      }
+    }
+  }, [
+    forecast,
+    timelineStep,
+    showIceContours,
+    showIceVectors,
+    showWeatherFigures,
+    weatherOverlays,
+  ]);
 
   // 7. Update Real-World Antarctic Research Stations & Waypoint Gates Layer
   useEffect(() => {
@@ -1676,19 +1828,26 @@ export default function App() {
   }
 
   function handleZoomToShip(closeUp = true) {
-    if (!activeShipTelemetry) return;
-    if (viewMode === "3d" && map3DRef.current) {
-      map3DRef.current.focusMapCoord(
-        activeShipTelemetry.x_m,
-        activeShipTelemetry.y_m,
-        closeUp
-      );
+    const fcXy = routeData?.forecast_aware?.xy;
+    const targetXm =
+      activeShipTelemetry?.x_m ??
+      (fcXy && fcXy.length > 0 ? fcXy[0][0] : scenario?.stations?.bharati?.x_m);
+    const targetYm =
+      activeShipTelemetry?.y_m ??
+      (fcXy && fcXy.length > 0 ? fcXy[0][1] : scenario?.stations?.bharati?.y_m);
+    if (targetXm == null || targetYm == null) return;
+
+    setShowRoutes(true);
+    setShowShipBridge(true);
+
+    if (map3DRef.current) {
+      map3DRef.current.focusMapCoord(targetXm, targetYm, closeUp);
     }
     if (mapRef.current) {
       const view = mapRef.current.getView();
       view.animate({
-        center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
-        zoom: closeUp ? 4.7 : 3.6,
+        center: [targetXm, targetYm],
+        zoom: closeUp ? 5.2 : 3.8,
         duration: 450,
       });
     }
@@ -2151,9 +2310,9 @@ export default function App() {
       const px = -uy;
       const py = ux;
 
-      // 1. Ship Radar / Safety Surveillance Ring (50 km radius)
+      // 1. Ship Radar / Safety Surveillance Ring (68 km radius)
       const radarRing = [];
-      const radarR = 50000;
+      const radarR = 68000;
       for (let a = 0; a <= 32; a++) {
         const ang = (a / 32) * 2 * Math.PI;
         radarRing.push([
@@ -2166,19 +2325,19 @@ export default function App() {
       });
       radarFeat.setStyle(
         new Style({
-          fill: new Fill({ color: "rgba(245, 158, 11, 0.10)" }),
+          fill: new Fill({ color: "rgba(163, 230, 53, 0.14)" }),
           stroke: new Stroke({
-            color: "rgba(251, 191, 36, 0.65)",
-            width: 1.4,
-            lineDash: [4, 4],
+            color: "rgba(163, 230, 53, 0.88)",
+            width: 2.0,
+            lineDash: [5, 4],
           }),
         })
       );
       src.addFeature(radarFeat);
 
       // 1b. Target Lock Crosshair Ticks around Ship Location
-      const crossInner = 54000;
-      const crossOuter = 82000;
+      const crossInner = 72000;
+      const crossOuter = 112000;
       for (const [cxDir, cyDir] of [
         [1, 0],
         [-1, 0],
@@ -2194,8 +2353,8 @@ export default function App() {
         tickFeat.setStyle(
           new Style({
             stroke: new Stroke({
-              color: "rgba(253, 224, 71, 0.90)",
-              width: 2.0,
+              color: "#bef264",
+              width: 2.6,
             }),
           })
         );
@@ -2206,42 +2365,42 @@ export default function App() {
       const leaderFeat = new Feature({
         geometry: new LineString([
           shipCoord,
-          [shipCoord[0] + ux * 105000, shipCoord[1] + uy * 105000],
+          [shipCoord[0] + ux * 145000, shipCoord[1] + uy * 145000],
         ]),
       });
       leaderFeat.setStyle(
         new Style({
           stroke: new Stroke({
-            color: "#fde047",
-            width: 2.2,
-            lineDash: [5, 3],
+            color: "#a3e635",
+            width: 2.8,
+            lineDash: [6, 3],
           }),
         })
       );
       src.addFeature(leaderFeat);
 
-      // 3. Oriented Icebreaker Ship Hull Polygon (Bow pointed along course heading)
-      const hullLen = 46000;
-      const hullBeam = 18500;
+      // 3. Enlarged High-Visibility Neon Lime-Chartreuse Icebreaker Ship Hull Polygon
+      const hullLen = 78000;
+      const hullBeam = 33000;
       const bow = [
         shipCoord[0] + ux * hullLen,
         shipCoord[1] + uy * hullLen,
       ];
       const stbdMid = [
-        shipCoord[0] + ux * (hullLen * 0.15) + px * hullBeam,
-        shipCoord[1] + uy * (hullLen * 0.15) + py * hullBeam,
+        shipCoord[0] + ux * (hullLen * 0.18) + px * hullBeam,
+        shipCoord[1] + uy * (hullLen * 0.18) + py * hullBeam,
       ];
       const stbdStern = [
-        shipCoord[0] - ux * (hullLen * 0.75) + px * (hullBeam * 0.85),
-        shipCoord[1] - uy * (hullLen * 0.75) + py * (hullBeam * 0.85),
+        shipCoord[0] - ux * (hullLen * 0.78) + px * (hullBeam * 0.88),
+        shipCoord[1] - uy * (hullLen * 0.78) + py * (hullBeam * 0.88),
       ];
       const portStern = [
-        shipCoord[0] - ux * (hullLen * 0.75) - px * (hullBeam * 0.85),
-        shipCoord[1] - uy * (hullLen * 0.75) - py * (hullBeam * 0.85),
+        shipCoord[0] - ux * (hullLen * 0.78) - px * (hullBeam * 0.88),
+        shipCoord[1] - uy * (hullLen * 0.78) - py * (hullBeam * 0.88),
       ];
       const portMid = [
-        shipCoord[0] + ux * (hullLen * 0.15) - px * hullBeam,
-        shipCoord[1] + uy * (hullLen * 0.15) - py * hullBeam,
+        shipCoord[0] + ux * (hullLen * 0.18) - px * hullBeam,
+        shipCoord[1] + uy * (hullLen * 0.18) - py * hullBeam,
       ];
 
       const hullFeat = new Feature({
@@ -2270,8 +2429,8 @@ export default function App() {
       });
       hullFeat.setStyle(
         new Style({
-          fill: new Fill({ color: "#f59e0b" }),
-          stroke: new Stroke({ color: "#07090e", width: 2.4 }),
+          fill: new Fill({ color: "#a3e635" }),
+          stroke: new Stroke({ color: "#ecfccb", width: 3.0 }),
         })
       );
       src.addFeature(hullFeat);
@@ -2283,8 +2442,9 @@ export default function App() {
       shipLabelFeat.setStyle(
         new Style({
           image: new CircleStyle({
-            radius: 3.5,
-            fill: new Fill({ color: "#fef3c7" }),
+            radius: 6.0,
+            fill: new Fill({ color: "#fef08a" }),
+            stroke: new Stroke({ color: "#1a2e05", width: 2.2 }),
           }),
           text: new TextStyle({
             text: `SHIP: RV POLAR EXPLORER [${Math.abs(tel.lat).toFixed(1)}°S, ${Math.abs(
@@ -2292,10 +2452,10 @@ export default function App() {
             ).toFixed(1)}°E]\nCOG ${tel.cog_deg}° · ${tel.speed_kmh} km/h · ${Math.round(
               tel.sic * 100
             )}% SIC`,
-            offsetY: -26,
-            font: "600 10px 'JetBrains Mono', monospace",
-            fill: new Fill({ color: "#fde047" }),
-            stroke: new Stroke({ color: "#07090e", width: 3.6 }),
+            offsetY: -34,
+            font: "700 11px 'JetBrains Mono', monospace",
+            fill: new Fill({ color: "#d9f99d" }),
+            stroke: new Stroke({ color: "#07090e", width: 4.0 }),
           }),
         })
       );
@@ -2348,8 +2508,8 @@ export default function App() {
         ringFeat.setStyle(
           new Style({
             stroke: new Stroke({
-              color: `rgba(250, 204, 21, ${alpha.toFixed(2)})`,
-              width: 2.0 - ringPhase * 0.8,
+              color: `rgba(163, 230, 53, ${alpha.toFixed(2)})`,
+              width: 2.4 - ringPhase * 0.8,
             }),
           })
         );
@@ -3096,6 +3256,15 @@ export default function App() {
             <label className="dss-check-row">
               <input
                 type="checkbox"
+                checked={showWeatherFigures}
+                onChange={(e) => setShowWeatherFigures(e.target.checked)}
+              />
+              <span>High Currents, Gale Winds &amp; Swell</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
                 checked={showH3Grid}
                 onChange={(e) => setShowH3Grid(e.target.checked)}
               />
@@ -3473,6 +3642,8 @@ export default function App() {
               showStations={showStations}
               showGraticule={showGraticule}
               showRoads={showRoads}
+              showWeatherFigures={showWeatherFigures}
+              weatherOverlays={weatherOverlays}
               showH3Grid={showH3Grid}
               h3Cells={h3Cells}
               h3Resolution={h3Resolution}
@@ -4414,13 +4585,6 @@ export default function App() {
                   >
                     04. Live A* &amp; Counterfactual Scoring
                   </button>
-                  <button
-                    type="button"
-                    className={guideTab === "pitch" ? "active" : ""}
-                    onClick={() => setGuideTab("pitch")}
-                  >
-                    05. Presentation Script &amp; Q&amp;A
-                  </button>
                 </div>
 
                 {guideTab === "overview" && (
@@ -4818,112 +4982,6 @@ export default function App() {
                           resistance proxy.
                         </li>
                       </ol>
-                    </div>
-                  </div>
-                )}
-
-                {guideTab === "pitch" && (
-                  <div className="dss-guide-grid">
-                    <div className="dss-guide-col">
-                      <h3>3-Minute Live Presentation Script</h3>
-                      <p className="dss-drawer-lead">
-                        Complete documentation is saved in{" "}
-                        <code>/PRESENTATION_GUIDE.md</code>. Follow this 4-part
-                        flow when presenting live:
-                      </p>
-                      <div className="dss-guide-callout">
-                        <h4>1. The Operational Problem (30 sec)</h4>
-                        <p>
-                          Resupply vessels sailing to India&apos;s{" "}
-                          <strong>Bharati</strong> and <strong>Maitri</strong>{" "}
-                          stations cross dynamic East Antarctic pack ice. Static
-                          climatology misses wind-driven heavy pack ridges (≥40%
-                          SIC) and transient coastal polynyas.{" "}
-                          <strong>ARGOS</strong> combines passive-microwave
-                          satellite sea ice, a causal 2-level residual U-Net,
-                          and time-dependent A* routing on a native 25 km{" "}
-                          <code>EPSG:3412</code> polar grid.
-                        </p>
-                      </div>
-                      <div className="dss-guide-callout">
-                        <h4>2. Satellite Input → Small U-Net Forecast (45 sec)</h4>
-                        <p>
-                          Select <strong>+5d</strong> in the timeline and enable
-                          the <strong>Split Curtain</strong>. Explain that the
-                          U-Net takes 10 channels (7 days of NSIDC satellite SIC{" "}
-                          <code>D-6..D0</code> + ocean mask +{" "}
-                          <code>sin/cos DOY</code>) and predicts the 7-day
-                          residual change <code>ΔSIC</code> in ~4 ms on CPU.
-                        </p>
-                      </div>
-                      <div className="dss-guide-callout">
-                        <h4>3. Validation Gate &amp; Live SGD Training (45 sec)</h4>
-                        <p>
-                          Open <strong>Model &amp; Datasets</strong>. Show that
-                          the U-Net beats both Persistence (B0) and Seasonal
-                          Tendency (B1) across all 7 leads on MAE and 15%
-                          ice-edge IIEE (km²). Click{" "}
-                          <strong>Run +5 Training Epochs</strong> to demonstrate
-                          live gradient descent and inspect internal 3×3
-                          convolutional feature maps.
-                        </p>
-                      </div>
-                      <div className="dss-guide-callout">
-                        <h4>4. Live A* Routing &amp; Counterfactual Proof (60 sec)</h4>
-                        <p>
-                          Adjust <strong>Ice-Risk Penalty (λ)</strong> on the
-                          right panel and click <strong>Step Voyage +1 Day</strong>.
-                          Highlight <strong>02. Counterfactual Evaluation</strong>:
-                          when both routes are scored on true observed satellite
-                          ice after planning, the forecast-aware route saves
-                          heavy-ice exposure hours and total transit time.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="dss-guide-col">
-                      <h3>Anticipated Judge &amp; Reviewer Q&amp;A</h3>
-                      <div className="dss-guide-callout">
-                        <h4>
-                          Q: Why a compact 2-level U-Net instead of a huge
-                          Vision Transformer?
-                        </h4>
-                        <p>
-                          At 25 km resolution over a regional 160×184 polar
-                          grid, 7-day pack-ice evolution is governed by 50–150 km
-                          synoptic wind advection and marginal edge melt. A
-                          2-level residual U-Net with Sobel gradient (∇x, ∇y)
-                          and Laplacian diffusion filters captures the exact
-                          physical receptive field, avoids overfitting on
-                          multi-year satellite archives, and runs in ~4 ms on
-                          shipboard CPU hardware.
-                        </p>
-                      </div>
-                      <div className="dss-guide-callout">
-                        <h4>
-                          Q: Why measure IIEE (Integrated Ice-Edge Error) alongside MAE?
-                        </h4>
-                        <p>
-                          Grid-wide MAE is diluted by open ocean (0% SIC) and
-                          interior pack ice. For polar navigation, accuracy at
-                          the <strong>15% ice-edge boundary</strong> determines
-                          where a ship enters pack ice. IIEE measures the exact
-                          misclassified area (km²) at the 15% contour, and our
-                          loss function upweights pixels near 15% SIC by 3×.
-                        </p>
-                      </div>
-                      <div className="dss-guide-callout">
-                        <h4>
-                          Q: How do you ensure the route comparison is scientifically fair?
-                        </h4>
-                        <p>
-                          Neither route is scored on its own planning assumption.
-                          Both the U-Net route and the Static Climatology route
-                          are locked at departure day D0 and then evaluated
-                          post-hoc against the actual observed NSIDC satellite
-                          sea-ice fields of days D+1..D+14.
-                        </p>
-                      </div>
                     </div>
                   </div>
                 )}
