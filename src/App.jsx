@@ -20,6 +20,13 @@ import { getJSON, unpack, sliceLead } from "./api.js";
 import { paintGrid } from "./colormap.js";
 import Map3DView from "./Map3DView.jsx";
 import LandingPage from "./LandingPage.jsx";
+import {
+  VESSEL_PRESETS,
+  computeRouteFuelAndSafety,
+  computePolarRiskFields,
+  getAdaptiveH3Resolution,
+  buildAdaptiveH3Grid,
+} from "./polarRiskAndH3.js";
 
 const EPSG_3412 =
   "+proj=stere +lat_0=-90 +lat_ts=-70 +lon_0=0 +x_0=0 +y_0=0 +a=6378273 +b=6356889.449 +units=m +no_defs";
@@ -269,6 +276,12 @@ export default function App() {
   const [showStations, setShowStations] = useState(true);
   const [showGraticule, setShowGraticule] = useState(false);
   const [showRoads, setShowRoads] = useState(false);
+  const [showH3Grid, setShowH3Grid] = useState(false);
+  const [cameraRadius3d, setCameraRadius3d] = useState(158);
+  const [zoom2d, setZoom2d] = useState(2.5);
+  const [vesselProfile, setVesselProfile] = useState(
+    VESSEL_PRESETS.pc6_research
+  );
   const [selectedTarget, setSelectedTarget] = useState(null);
   const [shipStepIdx, setShipStepIdx] = useState(null);
   const [autoFollowShip, setAutoFollowShip] = useState(false);
@@ -321,6 +334,7 @@ export default function App() {
   const rasterLayerRef = useRef(null);
   const landLayerRef = useRef(null);
   const graticuleSourceRef = useRef(new VectorSource());
+  const h3SourceRef = useRef(new VectorSource());
   const iceDynamicsSourceRef = useRef(new VectorSource());
   const routeSourceRef = useRef(new VectorSource());
   const pulseSourceRef = useRef(new VectorSource());
@@ -404,6 +418,10 @@ export default function App() {
       source: graticuleSourceRef.current,
     });
 
+    const h3Layer = new VectorLayer({
+      source: h3SourceRef.current,
+    });
+
     const iceDynamicsLayer = new VectorLayer({
       source: iceDynamicsSourceRef.current,
     });
@@ -435,6 +453,7 @@ export default function App() {
         rasterLayer,
         landLayer,
         graticuleLayer,
+        h3Layer,
         iceDynamicsLayer,
         icebergLayer,
         routeLayer,
@@ -454,6 +473,13 @@ export default function App() {
     });
 
     map.getView().fit(extent, { padding: [20, 20, 20, 20] });
+
+    map.getView().on("change:resolution", () => {
+      const z = map.getView().getZoom();
+      if (z != null) {
+        setZoom2d(Number(z.toFixed(1)));
+      }
+    });
 
     // Crosshair telemetry probe on pointer move (direct DOM update to avoid layout/state jitter)
     map.on("pointermove", (evt) => {
@@ -816,6 +842,105 @@ export default function App() {
     return () => clearInterval(id);
   }, [isPlaying]);
 
+  // 5b. Compute Multi-Factor Polar Risk Fields (Ice, Iceberg, Weather, Ocean, Combined) & Adaptive H3 Hex Grid
+  const currentSicSlice = useMemo(() => {
+    if (!forecast) return null;
+    const lead = Math.max(0, Math.min(6, timelineStep - 1));
+    const histIdx = Math.max(0, Math.min(6, timelineStep + 6));
+    if (timelineStep <= 0) {
+      return sliceLead(forecast.history, histIdx);
+    }
+    return activeLayer === "obs"
+      ? sliceLead(forecast.obs, lead)
+      : sliceLead(forecast.ml, lead);
+  }, [forecast, timelineStep, activeLayer]);
+
+  const polarRiskFields = useMemo(() => {
+    if (!scenario || !currentSicSlice) return null;
+    return computePolarRiskFields({
+      scenario,
+      sicSlice: currentSicSlice,
+      uncertaintyGrid,
+      elevationGrid,
+      surfaceTypeGrid,
+      icebergs,
+      timelineStep,
+      vesselProfile,
+    });
+  }, [
+    scenario,
+    currentSicSlice,
+    uncertaintyGrid,
+    elevationGrid,
+    surfaceTypeGrid,
+    icebergs,
+    timelineStep,
+    vesselProfile,
+  ]);
+
+  const h3Resolution = useMemo(
+    () => getAdaptiveH3Resolution(viewMode, cameraRadius3d, zoom2d),
+    [viewMode, cameraRadius3d, zoom2d]
+  );
+
+  const h3Cells = useMemo(() => {
+    if (!showH3Grid || !scenario || !currentSicSlice || !polarRiskFields) {
+      return [];
+    }
+    return buildAdaptiveH3Grid({
+      scenario,
+      sicSlice: currentSicSlice,
+      elevationGrid,
+      surfaceTypeGrid,
+      riskFields: polarRiskFields,
+      h3Resolution,
+    });
+  }, [
+    showH3Grid,
+    scenario,
+    currentSicSlice,
+    elevationGrid,
+    surfaceTypeGrid,
+    polarRiskFields,
+    h3Resolution,
+  ]);
+
+  // Update 2D OpenLayers H3 Hexagonal Grid vector layer when showH3Grid or h3Cells change
+  useEffect(() => {
+    const src = h3SourceRef.current;
+    src.clear();
+    if (!showH3Grid || !h3Cells.length) return;
+
+    for (const cell of h3Cells) {
+      const isSelected =
+        selectedTarget?.h3Index && selectedTarget.h3Index === cell.h3Index;
+      const feat = new Feature({
+        geometry: new Polygon([cell.ringXy]),
+        inspect: cell.inspect,
+      });
+      feat.setStyle(
+        new Style({
+          fill: new Fill({
+            color: isSelected ? "rgba(56, 189, 248, 0.28)" : cell.fill,
+          }),
+          stroke: new Stroke({
+            color: isSelected ? "#38bdf8" : cell.stroke,
+            width: isSelected ? 2.4 : 1.35,
+          }),
+          text: isSelected
+            ? new TextStyle({
+                text: `${cell.h3Index}\n${cell.riskCode}`,
+                font: "600 9px 'JetBrains Mono', monospace",
+                fill: new Fill({ color: "#f8fafc" }),
+                stroke: new Stroke({ color: "#07090e", width: 3 }),
+              })
+            : undefined,
+        })
+      );
+      src.addFeature(feat);
+    }
+  }, [showH3Grid, h3Cells, selectedTarget]);
+
   // 6. Paint raster canvas & update OpenLayers ImageStatic layer
   useEffect(() => {
     if (!scenario || !forecast || !rasterLayerRef.current) return;
@@ -825,6 +950,38 @@ export default function App() {
     const [H, W] = scenario.shape;
 
     function getSliceForLayer(layerName) {
+      if (polarRiskFields) {
+        if (layerName === "risk_combined") {
+          return {
+            slice: { data: polarRiskFields.combinedRisk, shape: [H, W] },
+            mode: "risk",
+          };
+        }
+        if (layerName === "risk_ice") {
+          return {
+            slice: { data: polarRiskFields.iceRisk, shape: [H, W] },
+            mode: "risk",
+          };
+        }
+        if (layerName === "risk_iceberg") {
+          return {
+            slice: { data: polarRiskFields.icebergRisk, shape: [H, W] },
+            mode: "risk",
+          };
+        }
+        if (layerName === "risk_weather") {
+          return {
+            slice: { data: polarRiskFields.weatherRisk, shape: [H, W] },
+            mode: "risk",
+          };
+        }
+        if (layerName === "risk_ocean") {
+          return {
+            slice: { data: polarRiskFields.oceanRisk, shape: [H, W] },
+            mode: "risk",
+          };
+        }
+      }
       if (
         timelineStep <= 0 &&
         layerName !== "uncertainty" &&
@@ -925,6 +1082,7 @@ export default function App() {
   }, [
     scenario,
     forecast,
+    polarRiskFields,
     uncertaintyGrid,
     extraGrid,
     activeLayer,
@@ -2553,6 +2711,17 @@ export default function App() {
   const fcMetrics = routeData?.forecast_aware?.metrics;
   const stMetrics = routeData?.static?.metrics;
 
+  const vesselFuelSummary = useMemo(
+    () =>
+      computeRouteFuelAndSafety(
+        fcMetrics,
+        stMetrics,
+        vesselProfile,
+        activeShipTelemetry?.progressPct ?? 0
+      ),
+    [fcMetrics, stMetrics, vesselProfile, activeShipTelemetry?.progressPct]
+  );
+
   const currentTimelineLabel = useMemo(() => {
     if (!forecast) return "";
     if (timelineStep <= 0) {
@@ -2769,6 +2938,63 @@ export default function App() {
 
           <section className="dss-panel">
             <div className="dss-panel-head">
+              <h2>Polar Risk Map</h2>
+            </div>
+
+            <div className="dss-layer-list">
+              {[
+                {
+                  id: "risk_combined",
+                  label: "Combined Polar Risk Map",
+                },
+                {
+                  id: "risk_ice",
+                  label: "Ice Risk (SIC + Vessel Limit)",
+                },
+                {
+                  id: "risk_iceberg",
+                  label: "Iceberg Risk (USNIC Drift Cones)",
+                },
+                {
+                  id: "risk_weather",
+                  label: "Weather Risk (U10 Wind + Katabatic)",
+                },
+                {
+                  id: "risk_ocean",
+                  label: "Ocean Risk (Bathymetry + Current)",
+                },
+              ].map((item) => (
+                <label
+                  key={item.id}
+                  className={`dss-radio-row ${
+                    activeLayer === item.id && !swipeEnabled ? "selected" : ""
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="layer"
+                    checked={activeLayer === item.id}
+                    onChange={() => {
+                      setSwipeEnabled(false);
+                      setActiveLayer(item.id);
+                    }}
+                  />
+                  <span className="dss-radio-label">{item.label}</span>
+                </label>
+              ))}
+            </div>
+
+            {/* 4-Tier Polar Risk Legend: Safe / Caution / High / No-Go */}
+            <div className="dss-risk-legend-strip">
+              <span className="risk-pill safe">Safe</span>
+              <span className="risk-pill caution">Caution</span>
+              <span className="risk-pill high">High</span>
+              <span className="risk-pill nogo">No-Go</span>
+            </div>
+          </section>
+
+          <section className="dss-panel">
+            <div className="dss-panel-head">
               <h2>Sea-Ice Field</h2>
             </div>
 
@@ -2865,6 +3091,18 @@ export default function App() {
                 onChange={(e) => setShowStations(e.target.checked)}
               />
               <span>Antarctic Stations</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showH3Grid}
+                onChange={(e) => setShowH3Grid(e.target.checked)}
+              />
+              <span>
+                Adaptive H3 Grid{" "}
+                <strong className="mono cyan-text">(Res {h3Resolution})</strong>
+              </span>
             </label>
 
             <label className="dss-check-row">
@@ -3235,6 +3473,11 @@ export default function App() {
               showStations={showStations}
               showGraticule={showGraticule}
               showRoads={showRoads}
+              showH3Grid={showH3Grid}
+              h3Cells={h3Cells}
+              h3Resolution={h3Resolution}
+              selectedH3Index={selectedTarget?.h3Index || null}
+              onCameraZoomChange={(r) => setCameraRadius3d(r)}
               routeData={routeData}
               icebergs={icebergs}
               activeShipTelemetry={activeShipTelemetry}
@@ -3756,7 +3999,7 @@ export default function App() {
           </section>
 
           {/* Compact Route Metrics Summary */}
-          <section className="dss-panel dss-panel-last">
+          <section className="dss-panel">
             <div className="dss-panel-head">
               <h2>Route Summary</h2>
             </div>
@@ -3804,7 +4047,7 @@ export default function App() {
                   </div>
                   <div className="dss-rc-row">
                     <span>Duration</span>
-                    <strong className="mono">{fcMetrics.hours} h</strong>
+                    <strong className="mono">{vesselFuelSummary.adjustedHours} h</strong>
                     <span className="mono">{stMetrics.hours} h</span>
                   </div>
                   <div className="dss-rc-row">
@@ -3824,6 +4067,227 @@ export default function App() {
             ) : (
               <p className="dss-meta-line">Computing route...</p>
             )}
+          </section>
+
+          {/* Vessel Profile & Fuel Capacity Section */}
+          <section className="dss-panel dss-panel-last">
+            <div className="dss-panel-head">
+              <h2>Vessel Profile &amp; Fuel</h2>
+              <span className="mono cyan-text" style={{ fontSize: "10px" }}>
+                {vesselProfile.iceClass.split(" ")[0]}{" "}
+                {vesselProfile.iceClass.split(" ")[2] || ""}
+              </span>
+            </div>
+
+            {/* Vessel Preset / Model Selector */}
+            <label className="dss-field">
+              <span>Vessel Type / Model</span>
+              <select
+                value={vesselProfile.id}
+                onChange={(e) => {
+                  const nextPreset = VESSEL_PRESETS[e.target.value];
+                  if (nextPreset) setVesselProfile({ ...nextPreset });
+                }}
+              >
+                {Object.values(VESSEL_PRESETS).map((vp) => (
+                  <option key={vp.id} value={vp.id}>
+                    {vp.name} — {vp.model}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {/* Editable Vessel Parameters Grid */}
+            <div className="dss-vessel-inputs-grid">
+              <label className="dss-field-compact">
+                <span>Speed (km/h)</span>
+                <input
+                  type="number"
+                  min={8}
+                  max={36}
+                  step={0.5}
+                  value={vesselProfile.speedKmh}
+                  onChange={(e) =>
+                    setVesselProfile((prev) => ({
+                      ...prev,
+                      speedKmh: Math.max(8, Number(e.target.value) || 22),
+                    }))
+                  }
+                />
+              </label>
+
+              <label className="dss-field-compact">
+                <span>Max Safe SIC (%)</span>
+                <input
+                  type="number"
+                  min={25}
+                  max={95}
+                  step={5}
+                  value={vesselProfile.maxSicPct}
+                  onChange={(e) =>
+                    setVesselProfile((prev) => ({
+                      ...prev,
+                      maxSicPct: Math.max(
+                        25,
+                        Math.min(95, Number(e.target.value) || 70)
+                      ),
+                    }))
+                  }
+                />
+              </label>
+
+              <label className="dss-field-compact">
+                <span>Max Ice Thick (m)</span>
+                <input
+                  type="number"
+                  min={0.4}
+                  max={3.5}
+                  step={0.1}
+                  value={vesselProfile.maxIceThicknessM}
+                  onChange={(e) =>
+                    setVesselProfile((prev) => ({
+                      ...prev,
+                      maxIceThicknessM: Math.max(
+                        0.4,
+                        Number(e.target.value) || 1.2
+                      ),
+                    }))
+                  }
+                />
+              </label>
+
+              <label className="dss-field-compact">
+                <span>Fuel Burn (t/day)</span>
+                <input
+                  type="number"
+                  min={5}
+                  max={80}
+                  step={0.5}
+                  value={vesselProfile.baseFuelTonsPerDay}
+                  onChange={(e) =>
+                    setVesselProfile((prev) => ({
+                      ...prev,
+                      baseFuelTonsPerDay: Math.max(
+                        5,
+                        Number(e.target.value) || 18.5
+                      ),
+                    }))
+                  }
+                />
+              </label>
+
+              <label className="dss-field-compact">
+                <span>Fuel Capacity (t)</span>
+                <input
+                  type="number"
+                  min={100}
+                  max={6000}
+                  step={50}
+                  value={vesselProfile.fuelCapacityTons}
+                  onChange={(e) => {
+                    const cap = Math.max(100, Number(e.target.value) || 1250);
+                    setVesselProfile((prev) => ({
+                      ...prev,
+                      fuelCapacityTons: cap,
+                      initialFuelTons: Math.min(prev.initialFuelTons, cap),
+                    }));
+                  }}
+                />
+              </label>
+
+              <label className="dss-field-compact">
+                <span>Start Fuel (t)</span>
+                <input
+                  type="number"
+                  min={50}
+                  max={vesselProfile.fuelCapacityTons}
+                  step={25}
+                  value={vesselProfile.initialFuelTons}
+                  onChange={(e) =>
+                    setVesselProfile((prev) => ({
+                      ...prev,
+                      initialFuelTons: Math.min(
+                        prev.fuelCapacityTons,
+                        Math.max(50, Number(e.target.value) || 1100)
+                      ),
+                    }))
+                  }
+                />
+              </label>
+            </div>
+
+            {/* Ice Capability & Hull Damage Tolerance Assessment */}
+            <div
+              className={`dss-vessel-capability-box status-${vesselFuelSummary.capabilityStatus.toLowerCase()}`}
+            >
+              <div className="dss-vc-top">
+                <span>ICE CAPABILITY &amp; DAMAGE TOLERANCE</span>
+                <strong>{vesselFuelSummary.capabilityStatus}</strong>
+              </div>
+              <p className="dss-vc-detail">{vesselFuelSummary.capabilityDetail}</p>
+              <div className="dss-vc-meta mono">
+                <span>Class: {vesselProfile.iceClass}</span>
+                <span>·</span>
+                <span>
+                  Limit: ≤{vesselProfile.maxSicPct}% SIC /{" "}
+                  {vesselProfile.maxIceThicknessM.toFixed(2)} m
+                </span>
+              </div>
+            </div>
+
+            {/* Fuel Capacity, Consumption & Remaining Range Telemetry */}
+            <div className="dss-fuel-telemetry-box">
+              <div className="dss-fuel-bar-head">
+                <span>Voyage Fuel Reserve (After Route)</span>
+                <strong className="mono">
+                  {vesselFuelSummary.remainingFuelTons} /{" "}
+                  {vesselFuelSummary.fuelCapacityTons} t (
+                  {vesselFuelSummary.remainingFuelPct}%)
+                </strong>
+              </div>
+              <div className="dss-fuel-progress-track">
+                <div
+                  className="dss-fuel-progress-fill"
+                  style={{
+                    width: `${Math.max(
+                      4,
+                      Math.min(100, vesselFuelSummary.remainingFuelPct)
+                    )}%`,
+                  }}
+                />
+              </div>
+
+              <div className="dss-fuel-metrics-grid">
+                <div>
+                  <span>Fuel Capacity</span>
+                  <strong className="mono">
+                    {vesselFuelSummary.fuelCapacityTons} t
+                  </strong>
+                </div>
+                <div>
+                  <span>Current / Rem. Fuel</span>
+                  <strong className="mono cyan-text">
+                    {vesselFuelSummary.remainingFuelTons} t
+                  </strong>
+                </div>
+                <div>
+                  <span>Est. Consumption</span>
+                  <strong className="mono">
+                    {vesselFuelSummary.estimatedBurnTons} t
+                    {vesselFuelSummary.fuelSavedTons > 0
+                      ? ` (-${vesselFuelSummary.fuelSavedTons}t)`
+                      : ""}
+                  </strong>
+                </div>
+                <div>
+                  <span>Est. Rem. Range</span>
+                  <strong className="mono">
+                    {vesselFuelSummary.estimatedRangeKm.toLocaleString()} km (
+                    {vesselFuelSummary.estimatedRangeNm.toLocaleString()} NM)
+                  </strong>
+                </div>
+              </div>
+            </div>
           </section>
         </aside>
       </main>

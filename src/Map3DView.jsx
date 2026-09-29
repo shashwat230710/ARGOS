@@ -7,16 +7,17 @@ import React, {
 } from "react";
 import * as THREE from "three";
 import proj4 from "proj4";
-import { sicRgba, errorRgba } from "./colormap.js";
+import { latLngToCell } from "h3-js";
+import { sicRgba, errorRgba, riskRgba } from "./colormap.js";
 
 const R_GLOBE = 215;
 
 /**
  * Interactive 3D Polar Globe & Sector Terrain Navigation Map (Three.js WebGL)
- * Supports seamless switching between:
- *  - 3D Polar Globe (Spherical Earth curvature with Southern Hemisphere context, atmospheric limb halo & DEM extrusion)
- *  - 3D Sector Terrain (Planar DEM block)
- * Preserves all layers, station beacons, tabular icebergs, A* optimal routes, and direct map destination selection.
+ * - Stable polar rotation pivot (no unexpected pivot jumps on click/drag)
+ * - Smooth inertial zoom, orbit rotation, and bounded surface-locked pan
+ * - Supports Polar Risk Map rendering (Safe / Caution / High / No-Go)
+ * - Supports real Uber H3 Adaptive Polar Hexagonal Grid overlay & click/hover inspection
  */
 const Map3DView = forwardRef(function Map3DView(
   {
@@ -38,6 +39,11 @@ const Map3DView = forwardRef(function Map3DView(
     showStations,
     showGraticule,
     showRoads = false,
+    showH3Grid = false,
+    h3Cells = [],
+    h3Resolution = 3,
+    selectedH3Index = null,
+    onCameraZoomChange,
     routeData,
     icebergs,
     activeShipTelemetry,
@@ -76,14 +82,15 @@ const Map3DView = forwardRef(function Map3DView(
     curTarget: new THREE.Vector3(0, 0, 0),
     spherical: {
       radius: 158,
-      phi: 0.68,
+      phi: 0.64,
       theta: 0.0,
     },
     curSpherical: {
       radius: 158,
-      phi: 0.68,
+      phi: 0.64,
       theta: 0.0,
     },
+    lastReportedBucket: 2,
     isDragging: false,
     pointerDownOnCanvas: false,
     dragButton: 0,
@@ -92,6 +99,9 @@ const Map3DView = forwardRef(function Map3DView(
     lastClientX: 0,
     lastClientY: 0,
     labels: [],
+    showH3Grid: false,
+    h3CellLookup: new Map(),
+    h3Resolution: 3,
   });
 
   // Convert EPSG:3412 (x_m, y_m) to planar scene coordinates (sx, sz) in [-W/2..W/2, -H/2..H/2]
@@ -192,8 +202,30 @@ const Map3DView = forwardRef(function Map3DView(
 
   function clampCameraTargets() {
     const st = threeRef.current;
-    st.spherical.phi = Math.max(0.06, Math.min(1.34, st.spherical.phi));
-    st.spherical.radius = Math.max(22, Math.min(340, st.spherical.radius));
+    st.spherical.phi = Math.max(0.06, Math.min(1.28, st.spherical.phi));
+    st.spherical.radius = Math.max(26, Math.min(320, st.spherical.radius));
+
+    // Keep camera pivot locked to the globe surface height so the rotation center never floats or detaches
+    const maxPan = st.globeMode ? 52 : 78;
+    const panDist = Math.hypot(st.target.x, st.target.z);
+    if (panDist > maxPan && panDist > 1e-5) {
+      st.target.x = (st.target.x / panDist) * maxPan;
+      st.target.z = (st.target.z / panDist) * maxPan;
+    }
+    if (st.globeMode) {
+      const surfPt = flatXZToSceneVec3(st.target.x, st.target.z, 0, true);
+      st.target.y = surfPt.y;
+    } else {
+      st.target.y = 0;
+    }
+
+    // Notify parent when zoom bucket changes so Adaptive H3 Grid resolution updates smoothly
+    const r = st.spherical.radius;
+    const bucket = r <= 78 ? 4 : r <= 132 ? 3 : 2;
+    if (bucket !== st.lastReportedBucket) {
+      st.lastReportedBucket = bucket;
+      st.onCameraZoomChange?.(r);
+    }
   }
 
   function applyCameraImmediate() {
@@ -216,21 +248,22 @@ const Map3DView = forwardRef(function Map3DView(
 
   useImperativeHandle(ref, () => ({
     zoomIn() {
-      threeRef.current.spherical.radius *= 0.8;
+      threeRef.current.spherical.radius *= 0.82;
       clampCameraTargets();
     },
     zoomOut() {
-      threeRef.current.spherical.radius *= 1.25;
+      threeRef.current.spherical.radius *= 1.22;
       clampCameraTargets();
     },
     resetView() {
       threeRef.current.target.set(0, 0, 0);
       threeRef.current.spherical.radius = 158;
-      threeRef.current.spherical.phi = 0.68;
+      threeRef.current.spherical.phi = 0.64;
       threeRef.current.spherical.theta = 0.0;
       clampCameraTargets();
     },
     topDownView() {
+      threeRef.current.target.set(0, 0, 0);
       threeRef.current.spherical.phi = 0.08;
       threeRef.current.spherical.theta = 0.0;
       clampCameraTargets();
@@ -244,10 +277,20 @@ const Map3DView = forwardRef(function Map3DView(
       clampCameraTargets();
     },
     focusMapCoord(xm, ym, closeUp = false) {
-      const pt3 = mapToScene3D(xm, ym, 0, threeRef.current.globeMode);
-      threeRef.current.target.copy(pt3);
-      threeRef.current.spherical.radius = closeUp ? 54 : 92;
-      threeRef.current.spherical.phi = closeUp ? 0.62 : 0.7;
+      const st = threeRef.current;
+      const [sx, sz] = mapToSceneXZ(xm, ym);
+      if (!closeUp) {
+        // Keep a stable Antarctic center pivot when not explicitly requesting a close-up zoom
+        st.target.set(0, 0, 0);
+        clampCameraTargets();
+        return;
+      }
+      // For explicit close-up zoom ("Fly To" / "Zoom"), move pivot gently within safe cap bounds
+      const scale = st.globeMode ? 0.45 : 0.75;
+      st.target.x = sx * scale;
+      st.target.z = sz * scale;
+      st.spherical.radius = 68;
+      st.spherical.phi = 0.56;
       clampCameraTargets();
     },
   }));
@@ -309,13 +352,11 @@ const Map3DView = forwardRef(function Map3DView(
     // Build 3D Planetary Globe Backdrop (Outer Southern Hemisphere Earth Sphere + Graticule + Atmosphere Rim)
     const globeBackdropGroup = new THREE.Group();
 
-    // Procedural Southern Hemisphere & Full Antarctica Continental Context Texture for the Planetary Sphere
     const globeCanvas = document.createElement("canvas");
     globeCanvas.width = 1024;
     globeCanvas.height = 512;
     const gCtx = globeCanvas.getContext("2d");
 
-    // Deep Southern Ocean bathymetric gradient from Equator (top) to South Pole (bottom)
     const oceanGrad = gCtx.createLinearGradient(0, 0, 0, 512);
     oceanGrad.addColorStop(0.0, "#040b17");
     oceanGrad.addColorStop(0.45, "#071830");
@@ -326,7 +367,6 @@ const Map3DView = forwardRef(function Map3DView(
     gCtx.fillStyle = oceanGrad;
     gCtx.fillRect(0, 0, 1024, 512);
 
-    // Subtle planetary latitude & longitude graticule lines on the outer globe sphere
     gCtx.strokeStyle = "rgba(56, 189, 248, 0.16)";
     gCtx.lineWidth = 1;
     for (let x = 0; x < 1024; x += 64) {
@@ -354,7 +394,6 @@ const Map3DView = forwardRef(function Map3DView(
     globeSphereMesh.position.set(0, -R_GLOBE, 0);
     globeBackdropGroup.add(globeSphereMesh);
 
-    // Subtle orbital atmosphere glow shell around the 3D Globe
     const atmoGeo = new THREE.SphereGeometry(R_GLOBE + 3.2, 64, 48);
     const atmoMat = new THREE.MeshBasicMaterial({
       color: 0x0ea5e9,
@@ -366,7 +405,6 @@ const Map3DView = forwardRef(function Map3DView(
     atmoMesh.position.set(0, -R_GLOBE, 0);
     globeBackdropGroup.add(atmoMesh);
 
-    // Equatorial / Polar Orbital Reference Ring around the Globe
     const orbitRingGeo = new THREE.RingGeometry(R_GLOBE + 1.5, R_GLOBE + 2.1, 96);
     orbitRingGeo.rotateX(-Math.PI / 2);
     const orbitRingMat = new THREE.MeshBasicMaterial({
@@ -402,7 +440,7 @@ const Map3DView = forwardRef(function Map3DView(
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     scene.add(terrainMesh);
 
-    // Sea-level water surface mesh (subdivided so it curves smoothly with the 3D Globe)
+    // Sea-level water surface mesh
     const waterGeo = new THREE.PlaneGeometry(W, H, 48, 40);
     waterGeo.rotateX(-Math.PI / 2);
     const waterMat = new THREE.MeshStandardMaterial({
@@ -501,7 +539,7 @@ const Map3DView = forwardRef(function Map3DView(
           e.clientX - st.downClientX,
           e.clientY - st.downClientY
         );
-        if (st.selectDestActive && e.buttons === 1 && totalMove < 10) {
+        if (st.selectDestActive && e.buttons === 1 && totalMove < 8) {
           return;
         }
         const dx = e.clientX - st.lastClientX;
@@ -510,16 +548,16 @@ const Map3DView = forwardRef(function Map3DView(
         st.lastClientY = e.clientY;
 
         if (st.dragButton === 2 || e.shiftKey) {
-          const panScale = st.spherical.radius * 0.0015;
+          // Smooth bounded surface pan (Right-Drag or Shift+Drag)
+          const panScale = st.spherical.radius * 0.0012;
           const cosT = Math.cos(st.spherical.theta);
           const sinT = Math.sin(st.spherical.theta);
           st.target.x -= (dx * cosT + dy * sinT) * panScale;
           st.target.z -= (-dx * sinT + dy * cosT) * panScale;
-          st.target.x = Math.max(-W * 0.48, Math.min(W * 0.48, st.target.x));
-          st.target.z = Math.max(-H * 0.48, Math.min(H * 0.48, st.target.z));
         } else {
-          st.spherical.theta -= dx * 0.0062;
-          st.spherical.phi -= dy * 0.0052;
+          // Pure stable orbit rotation around fixed pivot (Left-Drag)
+          st.spherical.theta -= dx * 0.0055;
+          st.spherical.phi -= dy * 0.0048;
         }
         clampCameraTargets();
         return;
@@ -568,6 +606,8 @@ const Map3DView = forwardRef(function Map3DView(
             ? `Antarctic Continent (+${elevM}m)`
             : sType === 1
             ? `Coastal Bedrock Oasis (+${elevM}m)`
+            : curSic?.mode === "risk"
+            ? `Risk Score ${sicVal.toFixed(2)} · Depth ${elevM}m`
             : `${(sicVal * 100).toFixed(1)}% SIC · Depth ${elevM}m`;
 
         if (probeTextRef?.current) {
@@ -583,29 +623,53 @@ const Map3DView = forwardRef(function Map3DView(
             kind: hitInspect.inspect.kind,
             isFeature: true,
           });
-        } else {
-          setHoverTooltip({
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top,
-            title: `${latStr}, ${lonStr}`,
-            subtitle: surfaceStr,
-            kind:
-              sType === 0
-                ? sicVal >= 0.4
-                  ? "Heavy Pack Ice Zone"
-                  : sicVal >= 0.15
-                  ? "Marginal Sea Ice"
-                  : "Southern Ocean"
-                : sType === 3
-                ? "Floating Glacial Shelf"
-                : sType === 1
-                ? "Coastal Rock Oasis"
-                : elevM >= 1500
-                ? "Mountain / Polar Plateau"
-                : "Continental Ice Sheet",
-            isFeature: false,
-          });
+          return;
         }
+
+        // Check if Adaptive H3 Grid is active and cursor is over an H3 cell
+        if (st.showH3Grid && !st.selectDestActive && sType === 0) {
+          try {
+            const h3Idx = latLngToCell(lat, lon, st.h3Resolution || 3);
+            const h3Cell = st.h3CellLookup?.get(h3Idx);
+            if (h3Cell) {
+              setHoverTooltip({
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
+                title: `H3 Cell ${h3Cell.h3Index}`,
+                subtitle: `Risk: ${h3Cell.riskLevel.toUpperCase()} (${h3Cell.combinedRiskVal.toFixed(
+                  2
+                )}) · Peak ${Math.round(h3Cell.maxSic * 100)}% SIC`,
+                kind: `Adaptive H3 Hex Grid (Res ${h3Cell.resolution})`,
+                isFeature: true,
+              });
+              return;
+            }
+          } catch {
+            // ignore out-of-range lat/lon
+          }
+        }
+
+        setHoverTooltip({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+          title: `${latStr}, ${lonStr}`,
+          subtitle: surfaceStr,
+          kind:
+            sType === 0
+              ? sicVal >= 0.4
+                ? "Heavy Pack Ice Zone"
+                : sicVal >= 0.15
+                ? "Marginal Sea Ice"
+                : "Southern Ocean"
+              : sType === 3
+              ? "Floating Glacial Shelf"
+              : sType === 1
+              ? "Coastal Rock Oasis"
+              : elevM >= 1500
+              ? "Mountain / Polar Plateau"
+              : "Continental Ice Sheet",
+          isFeature: false,
+        });
       } else {
         setHoverTooltip(null);
       }
@@ -621,14 +685,14 @@ const Map3DView = forwardRef(function Map3DView(
         e.clientX - st.downClientX,
         e.clientY - st.downClientY
       );
-      const clickThreshold = st.selectDestActive ? 14 : 7;
+      const clickThreshold = st.selectDestActive ? 10 : 5;
       if (moveDist < clickThreshold && e.button === 0) {
         const { hitInspect, terrainPoint } = getIntersection(
           e.clientX,
           e.clientY
         );
 
-        // If user is explicitly in Select Destination mode, or clicks directly on open map surface, select destination on map
+        // 1. Explicit Select Destination Mode: place destination pin without altering camera pivot
         if (st.selectDestActive && terrainPoint) {
           const [sx, sz] = scenePointToFlatXZ(terrainPoint, st.globeMode);
           const [xm, ym] = sceneXZToMap(sx, sz);
@@ -637,18 +701,26 @@ const Map3DView = forwardRef(function Map3DView(
           return;
         }
 
+        // 2. Inspect 3D feature (Station, Iceberg, Route, Destination Pin) without shifting camera pivot
         if (hitInspect?.inspect) {
           st.onInspectFeature?.(hitInspect.inspect);
           return;
         }
 
-        if (terrainPoint) {
+        // 3. If Adaptive H3 Grid is active, clicking a hex cell inspects that H3 cell's multi-factor Polar Risk
+        if (st.showH3Grid && terrainPoint) {
           const [sx, sz] = scenePointToFlatXZ(terrainPoint, st.globeMode);
           const [xm, ym] = sceneXZToMap(sx, sz);
-          const [xmin, ymin, xmax, ymax] = scenario.extent;
-          if (xm >= xmin && xm <= xmax && ym >= ymin && ym <= ymax) {
-            const [lon, lat] = proj4("EPSG:3412", "EPSG:4326", [xm, ym]);
-            st.onSelectDestinationPoint?.({ lon, lat, x_m: xm, y_m: ym });
+          const [lon, lat] = proj4("EPSG:3412", "EPSG:4326", [xm, ym]);
+          try {
+            const h3Idx = latLngToCell(lat, lon, st.h3Resolution || 3);
+            const h3Cell = st.h3CellLookup?.get(h3Idx);
+            if (h3Cell?.inspect) {
+              st.onInspectFeature?.(h3Cell.inspect);
+              return;
+            }
+          } catch {
+            // ignore
           }
         }
       }
@@ -656,8 +728,9 @@ const Map3DView = forwardRef(function Map3DView(
 
     const onWheel = (e) => {
       e.preventDefault();
-      const factor = e.deltaY > 0 ? 1.09 : 0.91;
-      st.spherical.radius *= factor;
+      // Continuous exponential zoom for smooth trackpad & mouse wheel control
+      const delta = Math.max(-120, Math.min(120, e.deltaY));
+      st.spherical.radius *= Math.exp(delta * 0.0011);
       clampCameraTargets();
     };
 
@@ -688,7 +761,7 @@ const Map3DView = forwardRef(function Map3DView(
       phase = (phase + 0.022) % 1;
 
       // Smoothly damp camera spherical coordinates and target for fluid 60fps globe rotation/zoom
-      const damp = 0.22;
+      const damp = 0.2;
       st.curSpherical.radius +=
         (st.spherical.radius - st.curSpherical.radius) * damp;
       st.curSpherical.phi += (st.spherical.phi - st.curSpherical.phi) * damp;
@@ -779,26 +852,47 @@ const Map3DView = forwardRef(function Map3DView(
     };
   }, [scenario]);
 
-  // Keep latest callbacks and state synced on threeRef.current
+  // Keep latest callbacks and H3 lookup synced on threeRef.current
   useEffect(() => {
-    threeRef.current.globeMode = globeMode;
-    threeRef.current.selectDestActive = isSelectingDestination;
-    threeRef.current.onSelectDestinationPoint = onSelectDestinationPoint;
-    threeRef.current.onInspectFeature = onInspectFeature;
-    threeRef.current.activeSlice = activeSlice;
-    threeRef.current.elevationSlice = elevationSlice;
-    threeRef.current.surfaceTypeSlice = surfaceTypeSlice;
+    const st = threeRef.current;
+    const prevGlobe = st.globeMode;
+    st.globeMode = globeMode;
+    if (prevGlobe !== globeMode) {
+      st.target.set(0, 0, 0);
+      clampCameraTargets();
+    }
+    st.selectDestActive = isSelectingDestination;
+    st.onSelectDestinationPoint = onSelectDestinationPoint;
+    st.onInspectFeature = onInspectFeature;
+    st.onCameraZoomChange = onCameraZoomChange;
+    st.activeSlice = activeSlice;
+    st.elevationSlice = elevationSlice;
+    st.surfaceTypeSlice = surfaceTypeSlice;
+    st.showH3Grid = showH3Grid;
+    st.h3Resolution = h3Resolution;
+
+    const map = new Map();
+    if (h3Cells?.length) {
+      for (const c of h3Cells) {
+        map.set(c.h3Index, c);
+      }
+    }
+    st.h3CellLookup = map;
   }, [
     globeMode,
     isSelectingDestination,
     onSelectDestinationPoint,
     onInspectFeature,
+    onCameraZoomChange,
     activeSlice,
     elevationSlice,
     surfaceTypeSlice,
+    showH3Grid,
+    h3Cells,
+    h3Resolution,
   ]);
 
-  // 2. Update 3D Globe / Terrain Vertex Geometry + Multi-Spectral Satellite / Hypsometric / Scientific Texture
+  // 2. Update 3D Globe / Terrain Vertex Geometry + Multi-Spectral Satellite / Hypsometric / Polar Risk Texture
   useEffect(() => {
     const st = threeRef.current;
     if (
@@ -859,11 +953,11 @@ const Map3DView = forwardRef(function Map3DView(
           yVal = Math.max(0.28, (elevM / 250) * verticalExaggeration);
         } else {
           const bathySubtle = Math.max(-0.55, elevM / 9500);
-          const iceThickness =
-            mode === "sic" && sic >= 0.12
+          const iceOrRiskHeight =
+            (mode === "sic" || mode === "risk") && sic >= 0.15
               ? Math.pow(sic, 1.35) * 0.85 * verticalExaggeration
               : 0;
-          yVal = bathySubtle + iceThickness;
+          yVal = bathySubtle + iceOrRiskHeight;
         }
 
         const p3 = flatXZToSceneVec3(sx, sz, yVal, globeMode);
@@ -873,7 +967,7 @@ const Map3DView = forwardRef(function Map3DView(
     posAttr.needsUpdate = true;
     st.terrainGeo.computeVertexNormals();
 
-    // B. Paint high-resolution 3D surface texture (Satellite / Terrain / Scientific)
+    // B. Paint high-resolution 3D surface texture (Satellite / Terrain / Scientific / Polar Risk Map)
     const canvas = st.terrainTex.image;
     const scale = 4;
     const TW = W * scale;
@@ -908,6 +1002,13 @@ const Map3DView = forwardRef(function Map3DView(
           G = 28,
           B = 54;
 
+        const sampleColor = (v) =>
+          mode === "risk"
+            ? riskRgba(v)
+            : mode === "sic"
+            ? sicRgba(v)
+            : errorRgba(v);
+
         if (basemapStyle === "terrain") {
           if (sType === 3) {
             R = 165 * shade;
@@ -939,10 +1040,9 @@ const Map3DView = forwardRef(function Map3DView(
             const waterG = Math.round(58 - depthNorm * 34);
             const waterB = Math.round(108 - depthNorm * 52);
 
-            if (val >= 0.12) {
-              const [ir, ig, ib, ia] =
-                mode === "sic" ? sicRgba(val) : errorRgba(val);
-              const a = Math.min(1, (ia / 255) * 1.05);
+            if (mode === "risk" || val >= 0.12) {
+              const [ir, ig, ib, ia] = sampleColor(val);
+              const a = Math.min(1, (ia / 255) * (mode === "risk" ? 0.92 : 1.05));
               R = waterR * (1 - a) + ir * a;
               G = waterG * (1 - a) + ig * a;
               B = waterB * (1 - a) + ib * a;
@@ -980,10 +1080,9 @@ const Map3DView = forwardRef(function Map3DView(
             const waterG = Math.round(32 - depthNorm * 16);
             const waterB = Math.round(68 - depthNorm * 28);
 
-            if (val >= 0.08) {
-              const [ir, ig, ib, ia] =
-                mode === "sic" ? sicRgba(val) : errorRgba(val);
-              const a = Math.min(1, (ia / 255) * 1.08);
+            if (mode === "risk" || val >= 0.08) {
+              const [ir, ig, ib, ia] = sampleColor(val);
+              const a = Math.min(1, (ia / 255) * (mode === "risk" ? 0.92 : 1.08));
               R = waterR * (1 - a) + ir * a;
               G = waterG * (1 - a) + ig * a;
               B = waterB * (1 - a) + ib * a;
@@ -1000,8 +1099,7 @@ const Map3DView = forwardRef(function Map3DView(
             G = (42 + elevFactor * 65) * shade;
             B = (62 + elevFactor * 80) * shade;
           } else {
-            const [ir, ig, ib, ia] =
-              mode === "sic" ? sicRgba(val) : errorRgba(val);
+            const [ir, ig, ib, ia] = sampleColor(val);
             const a = ia / 255;
             R = 8 * (1 - a) + ir * a;
             G = 18 * (1 - a) + ig * a;
@@ -1021,7 +1119,7 @@ const Map3DView = forwardRef(function Map3DView(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(cellCanvas, 0, 0, TW, TH);
 
-    if (basemapStyle === "satellite" && st.gibsImage) {
+    if (basemapStyle === "satellite" && st.gibsImage && mode !== "risk") {
       ctx.save();
       ctx.globalAlpha = 0.24;
       ctx.drawImage(st.gibsImage, 0, 0, TW, TH);
@@ -1111,7 +1209,7 @@ const Map3DView = forwardRef(function Map3DView(
     gibsStatus,
   ]);
 
-  // 3. Rebuild 3D Vector Overlays on Globe / Terrain
+  // 3. Rebuild 3D Vector Overlays on Globe / Terrain (including Adaptive H3 Polar Hex Grid)
   useEffect(() => {
     const st = threeRef.current;
     if (!st.dynamicGroup || !st.pulseGroup || !scenario) return;
@@ -1188,6 +1286,61 @@ const Map3DView = forwardRef(function Map3DView(
       return { mesh, pts };
     }
 
+    // 0. Adaptive H3 Polar Hexagonal Grid Layer (batched by Risk Level for 60fps performance)
+    if (showH3Grid && h3Cells?.length) {
+      const buckets = {
+        Safe: { color: 0x10b981, verts: [] },
+        Caution: { color: 0xeab308, verts: [] },
+        High: { color: 0xf97316, verts: [] },
+        "No-Go": { color: 0xe11d48, verts: [] },
+        Selected: { color: 0x38bdf8, verts: [] },
+      };
+
+      for (const cell of h3Cells) {
+        const ring = cell.ringXy;
+        if (!ring || ring.length < 4) continue;
+        const isSel = selectedH3Index && cell.h3Index === selectedH3Index;
+        const bKey = isSel ? "Selected" : cell.riskLevel || "Safe";
+        const targetArr = (buckets[bKey] || buckets.Safe).verts;
+        const yOff = isSel ? 0.78 : 0.44;
+
+        for (let i = 0; i < ring.length - 1; i++) {
+          const p0 = mapToScene3D(ring[i][0], ring[i][1], yOff, globeMode);
+          const p1 = mapToScene3D(ring[i + 1][0], ring[i + 1][1], yOff, globeMode);
+          targetArr.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z);
+        }
+
+        if (isSel) {
+          newLabels.push({
+            id: `h3-sel-${cell.h3Index}`,
+            text: `H3 ${cell.h3Index}`,
+            sub: `Res ${cell.resolution} · ${cell.riskLevel.toUpperCase()} (${cell.combinedRiskVal.toFixed(
+              2
+            )})`,
+            kind: "station",
+            pos3D: mapToScene3D(cell.centerXm, cell.centerYm, 2.2, globeMode),
+            inspect: cell.inspect,
+          });
+        }
+      }
+
+      for (const [key, b] of Object.entries(buckets)) {
+        if (b.verts.length === 0) continue;
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(b.verts, 3)
+        );
+        const mat = new THREE.LineBasicMaterial({
+          color: b.color,
+          transparent: true,
+          opacity: key === "Selected" ? 1.0 : 0.78,
+        });
+        const segs = new THREE.LineSegments(geo, mat);
+        st.dynamicGroup.add(segs);
+      }
+    }
+
     // A. Predicted 15% & 40% Sea-Ice Contours + Drift Vectors
     if (forecast?.ice_contours?.length) {
       const leadIdx = Math.max(
@@ -1248,162 +1401,170 @@ const Map3DView = forwardRef(function Map3DView(
       }
     }
 
-    // C. Real-World Mountain Peaks & Geographic Landmarks Labels (when Graticule / Landmarks enabled)
-    if (showGraticule) {
-      for (const mt of scenario.mountains || []) {
+    // C. Mountain Summit 3D Markers & Labels
+    if (showGraticule && scenario.mountains?.length) {
+      for (const mt of scenario.mountains) {
         const [sx, sz] = mapToSceneXZ(mt.x_m, mt.y_m);
-        const pos = mapToScene3D(mt.x_m, mt.y_m, 1.0, globeMode);
+        const peakY = sampleElevationSceneY(mt.x_m, mt.y_m);
         const coneGeo = new THREE.ConeGeometry(0.95, 2.2, 4);
         const coneMat = new THREE.MeshStandardMaterial({
           color: 0xe2e8f0,
-          roughness: 0.4,
+          emissive: 0x38bdf8,
+          emissiveIntensity: 0.22,
+          roughness: 0.35,
         });
-        const coneMesh = new THREE.Mesh(coneGeo, coneMat);
-        coneMesh.position.copy(pos);
-        orientToGlobeNormal(coneMesh, sx, sz);
-        coneMesh.userData.inspect = {
-          kind: "Antarctic Mountain Range / Summit",
+        const cone = new THREE.Mesh(coneGeo, coneMat);
+        const p3 = flatXZToSceneVec3(sx, sz, peakY + 0.9, globeMode);
+        cone.position.copy(p3);
+        orientToGlobeNormal(cone, sx, sz);
+        const inspectObj = {
+          kind: "Antarctic Mountain Range / Nunatak",
           title: mt.name,
-          subtitle: `${Math.abs(mt.lat).toFixed(2)}°S, ${Math.abs(
+          subtitle: `${Math.abs(mt.lat).toFixed(1)}°S, ${Math.abs(
             mt.lon
-          ).toFixed(2)}°E · Elevation +${mt.peak_m} m`,
+          ).toFixed(1)}°E · Summit +${mt.peak_m} m`,
           metrics: [
-            {
-              label: "Summit Elevation",
-              value: `+${mt.peak_m} m (BedMachine / REMA)`,
-            },
-            {
-              label: "Surface Classification",
-              value: "Alpine Nunatak & Glacial Ice",
-            },
+            { label: "Summit Elevation", value: `+${mt.peak_m} m (REMA DEM)` },
+            { label: "Geological Feature", value: mt.description },
           ],
         };
-        st.dynamicGroup.add(coneMesh);
+        cone.userData.inspect = inspectObj;
+        st.dynamicGroup.add(cone);
 
         newLabels.push({
           id: mt.id,
-          text: mt.name.split("(")[0].trim(),
-          sub: `+${mt.peak_m} m`,
+          text: `▲ ${mt.name}`,
+          sub: `+${mt.peak_m}m`,
           kind: "mountain",
-          pos3D: mapToScene3D(mt.x_m, mt.y_m, 2.8, globeMode),
-          inspect: coneMesh.userData.inspect,
-        });
-      }
-
-      for (const lm of scenario.landmarks || []) {
-        if (lm.kind === "mountain") continue;
-        const cleanName = String(lm.name).replace(/\n/g, " ");
-        newLabels.push({
-          id: `lm-${cleanName}`,
-          text: cleanName,
-          sub:
-            lm.kind === "shelf" || lm.kind === "glacier"
-              ? `Glacial Ice Shelf (+${lm.elevation_m || 55}m)`
-              : lm.kind === "sea" || lm.kind === "ocean"
-              ? `Depth ${lm.elevation_m || -2800}m`
-              : null,
-          kind: lm.kind,
-          pos3D: mapToScene3D(lm.x_m, lm.y_m, 1.8, globeMode),
-          inspect: {
-            kind: "Antarctic Geographic Feature",
-            title: cleanName,
-            subtitle: `${Math.abs(lm.lat).toFixed(1)}°S, ${Math.abs(
-              lm.lon
-            ).toFixed(1)}°E`,
-            metrics: [
-              { label: "Feature Type", value: String(lm.kind).toUpperCase() },
-              {
-                label: "Reference Elevation / Depth",
-                value: `${lm.elevation_m ?? 0} m`,
-              },
-            ],
-          },
+          pos3D: flatXZToSceneVec3(sx, sz, peakY + 2.5, globeMode),
+          inspect: inspectObj,
         });
       }
     }
 
-    // D. 6 Real-World Antarctic Research Stations & 56°S Entry Gate
+    // D. Antarctic Research Stations & Entry Gate
     if (showStations && scenario.stations) {
-      const stationMeta = [
-        { key: "ice_entry", color: 0x06b6d4, primary: true },
-        { key: "bharati", color: 0xf43f5e, primary: true },
-        { key: "maitri", color: 0xf43f5e, primary: true },
-        { key: "davis", color: 0x10b981, primary: false },
-        { key: "mawson", color: 0x10b981, primary: false },
-        { key: "syowa", color: 0x10b981, primary: false },
+      const stationKeys = [
+        "ice_entry",
+        "bharati",
+        "maitri",
+        "davis",
+        "mawson",
+        "syowa",
       ];
+      for (const key of stationKeys) {
+        const stInfo = scenario.stations[key];
+        if (!stInfo || !stInfo.in_grid) continue;
+        const [sx, sz] = mapToSceneXZ(stInfo.x_m, stInfo.y_m);
+        const baseY = sampleElevationSceneY(stInfo.x_m, stInfo.y_m);
+        const isPrimary =
+          key === "bharati" || key === "maitri" || key === "ice_entry";
+        const colorHex =
+          key === "ice_entry"
+            ? 0x06b6d4
+            : isPrimary
+            ? 0xf43f5e
+            : 0x10b981;
 
-      for (const cfg of stationMeta) {
-        const s = scenario.stations[cfg.key];
-        if (!s || !s.in_grid) continue;
-        const [sx, sz] = mapToSceneXZ(s.x_m, s.y_m);
-
-        const inspectPayload = {
+        const inspectObj = {
           kind: "Antarctic Research Station / Gate",
-          title: s.name,
-          subtitle: `${s.country} · ${Math.abs(s.lat).toFixed(2)}°S, ${Math.abs(
-            s.lon
-          ).toFixed(2)}°E`,
+          title: stInfo.name,
+          subtitle: `${stInfo.country} · ${Math.abs(stInfo.lat).toFixed(
+            2
+          )}°S, ${Math.abs(stInfo.lon).toFixed(2)}°E`,
           metrics: [
-            { label: "Operational Role", value: s.role },
-            { label: "Elevation", value: `+${s.elevation_m ?? 20} m` },
-            { label: "Grid Cell (Row, Col)", value: `(${s.row}, ${s.col})` },
+            { label: "Operational Role", value: stInfo.role },
+            {
+              label: "Elevation",
+              value: `+${stInfo.elevation_m || 25} m above MSL`,
+            },
+            {
+              label: "Grid Cell",
+              value: `Row ${stInfo.row}, Col ${stInfo.col}`,
+            },
           ],
         };
 
-        const pillarH = cfg.primary ? 4.2 : 3.0;
-        const stationGroup = new THREE.Group();
-        stationGroup.position.copy(mapToScene3D(s.x_m, s.y_m, 0, globeMode));
-        orientToGlobeNormal(stationGroup, sx, sz);
+        const pillarH = isPrimary ? 4.6 : 3.2;
+        const stGroup = new THREE.Group();
+        stGroup.position.copy(flatXZToSceneVec3(sx, sz, baseY, globeMode));
+        orientToGlobeNormal(stGroup, sx, sz);
 
-        const pillarGeo = new THREE.CylinderGeometry(0.22, 0.22, pillarH, 10);
+        const pillarGeo = new THREE.CylinderGeometry(0.26, 0.26, pillarH, 12);
         const pillarMat = new THREE.MeshStandardMaterial({
-          color: cfg.color,
-          emissive: cfg.color,
-          emissiveIntensity: 0.55,
+          color: colorHex,
+          emissive: colorHex,
+          emissiveIntensity: 0.65,
         });
         const pillar = new THREE.Mesh(pillarGeo, pillarMat);
         pillar.position.set(0, pillarH / 2, 0);
-        pillar.userData.inspect = inspectPayload;
-        stationGroup.add(pillar);
+        pillar.userData.inspect = inspectObj;
+        stGroup.add(pillar);
 
-        const headGeo = new THREE.SphereGeometry(
-          cfg.primary ? 0.82 : 0.6,
-          14,
-          14
-        );
-        const headMesh = new THREE.Mesh(headGeo, pillarMat);
-        headMesh.position.set(0, pillarH + 0.3, 0);
-        headMesh.userData.inspect = inspectPayload;
-        stationGroup.add(headMesh);
+        const headGeo = new THREE.SphereGeometry(isPrimary ? 0.9 : 0.65, 16, 16);
+        const head = new THREE.Mesh(headGeo, pillarMat);
+        head.position.set(0, pillarH + 0.35, 0);
+        head.userData.inspect = inspectObj;
+        stGroup.add(head);
 
-        st.dynamicGroup.add(stationGroup);
+        st.dynamicGroup.add(stGroup);
+
+        if (isPrimary) {
+          const ringGeo = new THREE.RingGeometry(0.9, 1.3, 28);
+          ringGeo.rotateX(-Math.PI / 2);
+          const ringMat = new THREE.MeshBasicMaterial({
+            color: colorHex,
+            transparent: true,
+            opacity: 0.75,
+            side: THREE.DoubleSide,
+          });
+          const ring = new THREE.Mesh(ringGeo, ringMat);
+          ring.position.copy(
+            flatXZToSceneVec3(sx, sz, baseY + 0.15, globeMode)
+          );
+          orientToGlobeNormal(ring, sx, sz);
+          ring.userData = { kind: "sonar", offset: key === "bharati" ? 0 : 0.5 };
+          st.pulseGroup.add(ring);
+        }
 
         newLabels.push({
-          id: `st-${cfg.key}`,
-          text: s.name,
-          sub: `${s.country} · ${Math.abs(s.lat).toFixed(1)}°S, ${Math.abs(
-            s.lon
+          id: `st-${key}`,
+          text: stInfo.name.split("(")[0].trim().toUpperCase(),
+          sub: `${Math.abs(stInfo.lat).toFixed(1)}°S, ${Math.abs(
+            stInfo.lon
           ).toFixed(1)}°E`,
-          kind: cfg.primary ? "station-primary" : "station",
-          pos3D: mapToScene3D(s.x_m, s.y_m, pillarH + 1.4, globeMode),
-          inspect: inspectPayload,
+          kind: isPrimary ? "station-primary" : "station",
+          pos3D: flatXZToSceneVec3(
+            sx,
+            sz,
+            baseY + pillarH + 1.5,
+            globeMode
+          ),
+          inspect: inspectObj,
         });
       }
     }
 
-    // E. 3D Tabular Icebergs (D-28, B-22A, A-74, A-76A) & 7-Day Drift Trajectories
+    // E. 3D Tabular Icebergs (D-28, B-22A, A-74, A-76A) + 7-Day Drift Tracks & Uncertainty Cones
     if (showIcebergs && icebergs?.length) {
       for (const berg of icebergs) {
         const track = berg.track || [];
         const history = berg.history || [];
 
+        if (history.length > 1) {
+          addLine3D(
+            history.map((p) => [p.x_m, p.y_m]),
+            0x94a3b8,
+            0.32,
+            true
+          );
+        }
         if (track.length > 1) {
           addLine3D(
-            track.map((pt) => [pt.x_m, pt.y_m]),
+            track.map((p) => [p.x_m, p.y_m]),
             0xf59e0b,
             0.42,
-            true
+            false
           );
         }
 
@@ -1431,19 +1592,37 @@ const Map3DView = forwardRef(function Map3DView(
         }
 
         const [bx, bz] = mapToSceneXZ(activePt.x_m, activePt.y_m);
+        const bergL = Math.max(1.8, (berg.length_km || 25) / 10);
+        const bergW = Math.max(1.2, (berg.width_km || 15) / 10);
+        const bergH = 1.45;
+
+        const bergGroup = new THREE.Group();
+        bergGroup.position.copy(
+          flatXZToSceneVec3(bx, bz, bergH / 2 + 0.15, globeMode)
+        );
+        orientToGlobeNormal(bergGroup, bx, bz);
+
+        const bergGeo = new THREE.BoxGeometry(bergL, bergH, bergW);
+        const bergMat = new THREE.MeshStandardMaterial({
+          color: 0xe0f2fe,
+          emissive: 0x38bdf8,
+          emissiveIntensity: 0.25,
+          roughness: 0.25,
+        });
+        const bergMesh = new THREE.Mesh(bergGeo, bergMat);
+        bergMesh.rotation.y = 0.45;
+
         const inspectBerg = {
-          kind: "USNIC / BYU Tracked 3D Tabular Iceberg",
+          kind: "USNIC / BYU Tracked Tabular Iceberg",
           title: berg.name || `Tabular Berg ${berg.id}`,
           subtitle: `${Math.abs(activePt.lat).toFixed(2)}°S, ${Math.abs(
             activePt.lon
           ).toFixed(2)}°E · ${berg.size_nm}`,
           metrics: [
-            { label: "Calving Origin", value: berg.calved_from },
+            { label: "Calved From", value: berg.calved_from },
             {
-              label: "3D Iceberg Freeboard / Draft",
-              value: `+${berg.freeboard_m || 40} m above sea / -${
-                berg.draft_m || 220
-              } m draft`,
+              label: "Freeboard / Draft",
+              value: `+${berg.freeboard_m || 40} m / -${berg.draft_m || 220} m`,
             },
             {
               label: "Drift Speed",
@@ -1451,117 +1630,124 @@ const Map3DView = forwardRef(function Map3DView(
             },
           ],
         };
-
-        const bLen = Math.max(1.8, (berg.length_km || 28) / 11);
-        const bWid = Math.max(1.2, (berg.width_km || 16) / 11);
-        const bergGeo = new THREE.BoxGeometry(bLen, 1.3, bWid);
-        const bergMat = new THREE.MeshStandardMaterial({
-          color: 0xe0f2fe,
-          emissive: 0x38bdf8,
-          emissiveIntensity: 0.22,
-          roughness: 0.35,
-        });
-        const bergMesh = new THREE.Mesh(bergGeo, bergMat);
-        bergMesh.position.copy(
-          flatXZToSceneVec3(bx, bz, 0.72, globeMode)
-        );
-        orientToGlobeNormal(bergMesh, bx, bz);
-        bergMesh.rotateY(0.45);
         bergMesh.userData.inspect = inspectBerg;
-        st.dynamicGroup.add(bergMesh);
+        bergGroup.add(bergMesh);
+        st.dynamicGroup.add(bergGroup);
+
+        const coneRingGeo = new THREE.RingGeometry(
+          bergL * 0.85,
+          bergL * 1.3,
+          28
+        );
+        coneRingGeo.rotateX(-Math.PI / 2);
+        const coneRingMat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: 0.55,
+          side: THREE.DoubleSide,
+        });
+        const coneRing = new THREE.Mesh(coneRingGeo, coneRingMat);
+        coneRing.position.copy(flatXZToSceneVec3(bx, bz, 0.22, globeMode));
+        orientToGlobeNormal(coneRing, bx, bz);
+        st.dynamicGroup.add(coneRing);
 
         newLabels.push({
           id: `berg-${berg.id}`,
-          text: `BERG ${berg.id} (${berg.size_nm})`,
-          sub: `Calved: ${berg.calved_from}`,
-          kind: "iceberg",
-          pos3D: flatXZToSceneVec3(bx, bz, 2.25, globeMode),
+          text: `BERG ${berg.id}`,
+          sub: berg.size_nm,
+          kind: "berg",
+          pos3D: flatXZToSceneVec3(bx, bz, bergH + 1.4, globeMode),
           inspect: inspectBerg,
         });
       }
     }
 
-    // F. Calculated Optimal Ship Navigation Path (A*), Naive Climatology Route & 3D Ship
+    // F. Optimal A* Vessel Route, Baseline Route & 3D Ship Model
     if (showRoutes && routeData) {
       const stXy = routeData.static?.xy;
       const fcXy = routeData.forecast_aware?.xy;
-      const courseCorrections = routeData.course_corrections || [];
+      const fcMetrics = routeData.forecast_aware?.metrics;
+      const stMetrics = routeData.static?.metrics;
 
       if (stXy && stXy.length > 1) {
-        addLine3D(stXy, 0xfb7185, 0.45, true);
+        addRouteRibbon3D(stXy, 0xf43f5e, 0.24, 0.42, {
+          kind: "Baseline Climatology Route",
+          title: "Naive Climatological Corridor",
+          subtitle: "Planned on 10-year historical mean without U-Net forecast",
+          metrics: [
+            {
+              label: "Heavy-Ice Exposure",
+              value: `${stMetrics?.heavy_ice_hours ?? "—"} h`,
+            },
+            { label: "Duration", value: `${stMetrics?.hours ?? "—"} h` },
+            { label: "Distance", value: `${stMetrics?.distance_km ?? "—"} km` },
+          ],
+        });
       }
 
       if (fcXy && fcXy.length > 1) {
-        const shipIdx = Math.max(
-          0,
-          Math.min(fcXy.length - 1, activeShipTelemetry?.idx ?? 0)
-        );
-        const wakeXy = fcXy.slice(0, shipIdx + 1);
-        const fwdXy = fcXy.slice(shipIdx);
+        const res = addRouteRibbon3D(fcXy, 0x22d3ee, 0.4, 0.62, {
+          kind: "U-Net Forecast-Aware Optimal Route",
+          title: "Optimal A* Avoidance Corridor",
+          subtitle: "Time-dependent 8-neighbor route avoiding pack ridges & bergs",
+          metrics: [
+            {
+              label: "Heavy-Ice Exposure",
+              value: `${fcMetrics?.heavy_ice_hours ?? 0} h`,
+            },
+            { label: "Duration", value: `${fcMetrics?.hours ?? "—"} h` },
+            { label: "Distance", value: `${fcMetrics?.distance_km ?? "—"} km` },
+          ],
+        });
 
-        if (wakeXy.length > 1) {
-          addRouteRibbon3D(wakeXy, 0x10b981, 0.28, 0.42);
-        }
-        if (fwdXy.length > 1) {
-          const fwdRes = addRouteRibbon3D(fwdXy, 0x06b6d4, 0.38, 0.52, {
-            kind: "Calculated Optimal Ship Navigation Path",
-            title: "U-Net Forecast-Aware A* Corridor",
-            subtitle:
-              "Circumvents >=40% heavy pack-ice ridges & tabular berg cones",
-            metrics: [
-              {
-                label: "Heavy-Ice Exposure",
-                value: `${
-                  routeData.forecast_aware?.metrics?.heavy_ice_hours ?? 0
-                } h`,
-              },
-              {
-                label: "Transit Duration",
-                value: `${routeData.forecast_aware?.metrics?.hours ?? "—"} h`,
-              },
-              {
-                label: "Track Distance",
-                value: `${
-                  routeData.forecast_aware?.metrics?.distance_km ?? "—"
-                } km`,
-              },
-            ],
-          });
-
-          if (fwdRes?.pts?.length > 2) {
-            const coneGeo = new THREE.ConeGeometry(0.6, 1.55, 8);
-            coneGeo.rotateX(Math.PI / 2);
-            const coneMat = new THREE.MeshBasicMaterial({ color: 0xa5f3fc });
-            for (let k = 0; k < 6; k++) {
-              const cone = new THREE.Mesh(coneGeo, coneMat);
-              cone.userData = {
-                kind: "chevronStream",
-                points: fwdRes.pts,
-                offset: k / 6,
-              };
-              st.pulseGroup.add(cone);
-            }
+        if (res && res.pts.length > 4) {
+          for (let cIdx = 0; cIdx < 5; cIdx++) {
+            const chevGeo = new THREE.ConeGeometry(0.58, 1.5, 4);
+            chevGeo.rotateX(Math.PI / 2);
+            const chevMat = new THREE.MeshBasicMaterial({
+              color: 0xa5f3fc,
+            });
+            const chev = new THREE.Mesh(chevGeo, chevMat);
+            chev.userData = {
+              kind: "chevronStream",
+              points: res.pts,
+              offset: cIdx / 5,
+            };
+            st.pulseGroup.add(chev);
           }
         }
 
-        // Optional subtle deflection lines when showCourseCorrections is checked manually (without floating CC label panels)
-        if (showCourseCorrections && courseCorrections.length > 0) {
-          for (const cc of courseCorrections) {
-            if (cc.deviation_km >= 18) {
-              addLine3D(
-                [
-                  [cc.st_x_m, cc.st_y_m],
-                  [cc.fc_x_m, cc.fc_y_m],
-                ],
-                0xfbbf24,
-                0.62,
-                true
-              );
-            }
+        if (showCourseCorrections && routeData.course_corrections?.length) {
+          for (const cc of routeData.course_corrections) {
+            const [cx, cz] = mapToSceneXZ(cc.fc_x_m, cc.fc_y_m);
+            const ccInspect = {
+              kind: "Dynamic Course Correction Maneuver",
+              title: `${cc.id}: ${cc.maneuver}`,
+              subtitle: `Voyage T+${cc.hour}h · COG ${cc.cog_deg}°`,
+              metrics: [
+                { label: "Hazard Avoided", value: cc.reason },
+                {
+                  label: "Ice Exposure Reduction",
+                  value: `-${cc.sic_reduction_pct}% SIC`,
+                },
+              ],
+            };
+            const markerGeo = new THREE.OctahedronGeometry(0.85, 0);
+            const markerMat = new THREE.MeshStandardMaterial({
+              color: 0xfbbf24,
+              emissive: 0xf59e0b,
+              emissiveIntensity: 0.7,
+            });
+            const marker = new THREE.Mesh(markerGeo, markerMat);
+            marker.position.copy(
+              flatXZToSceneVec3(cx, cz, 1.35, globeMode)
+            );
+            orientToGlobeNormal(marker, cx, cz);
+            marker.userData.inspect = ccInspect;
+            st.dynamicGroup.add(marker);
           }
         }
 
-        // 3D Research Vessel Model (RV Polar Explorer) + Animated Sonar Rings
         if (activeShipTelemetry) {
           const [sx, sz] = mapToSceneXZ(
             activeShipTelemetry.x_m,
@@ -1571,45 +1757,45 @@ const Map3DView = forwardRef(function Map3DView(
             activeShipTelemetry.next_x_m,
             activeShipTelemetry.next_y_m
           );
-          const shipPos3D = flatXZToSceneVec3(sx, sz, 0.85, globeMode);
-          const nextPos3D = flatXZToSceneVec3(nx, nz, 0.85, globeMode);
+
+          const shipGroup = new THREE.Group();
+          const shipPos3D = flatXZToSceneVec3(sx, sz, 0.9, globeMode);
+          const nextPos3D = flatXZToSceneVec3(nx, nz, 0.9, globeMode);
+          shipGroup.position.copy(shipPos3D);
+          if (shipPos3D.distanceTo(nextPos3D) > 0.01) {
+            shipGroup.lookAt(nextPos3D);
+          }
 
           const shipInspect = {
-            kind: "PC6 Ice-Strengthened Research Vessel",
+            kind: "Active Ice-Class Research Vessel",
             title: scenario?.ship?.name || "RV Polar Explorer",
             subtitle: `${Math.abs(activeShipTelemetry.lat).toFixed(
               2
             )}°S, ${Math.abs(activeShipTelemetry.lon).toFixed(
               2
-            )}°E · T+${Math.round(activeShipTelemetry.hour)}h`,
+            )}°E · Heading COG ${activeShipTelemetry.cog_deg}°`,
             metrics: [
               {
-                label: "Course & Speed",
-                value: `COG ${activeShipTelemetry.cog_deg}° · ${activeShipTelemetry.speed_kmh} km/h`,
+                label: "Vessel Speed",
+                value: `${activeShipTelemetry.speed_kmh} km/h`,
               },
               {
                 label: "Local Sea-Ice Concentration",
                 value: `${(activeShipTelemetry.sic * 100).toFixed(1)}% SIC`,
               },
               {
-                label: "Navigation Status",
-                value: "Following 3D Optimal Avoidance Corridor",
+                label: "Voyage Elapsed",
+                value: `T+${activeShipTelemetry.hour}h (${activeShipTelemetry.progressPct}%)`,
               },
             ],
           };
 
-          const shipGroup = new THREE.Group();
-          shipGroup.position.copy(shipPos3D);
-          if (shipPos3D.distanceTo(nextPos3D) > 0.01) {
-            shipGroup.up.copy(flatXZToSurfaceNormal(sx, sz, globeMode));
-            shipGroup.lookAt(nextPos3D);
-          }
-
-          const hullGeo = new THREE.BoxGeometry(1.35, 0.72, 3.1);
+          const hullGeo = new THREE.BoxGeometry(1.35, 0.78, 3.3);
           const hullMat = new THREE.MeshStandardMaterial({
-            color: 0xf59e0b,
-            emissive: 0xd97706,
-            emissiveIntensity: 0.45,
+            color: 0xfbbf24,
+            emissive: 0xf59e0b,
+            emissiveIntensity: 0.5,
+            roughness: 0.3,
           });
           const hullMesh = new THREE.Mesh(hullGeo, hullMat);
           hullMesh.userData.inspect = shipInspect;
@@ -1815,6 +2001,9 @@ const Map3DView = forwardRef(function Map3DView(
     showStations,
     showGraticule,
     showRoads,
+    showH3Grid,
+    h3Cells,
+    selectedH3Index,
     routeData,
     icebergs,
     activeShipTelemetry,
@@ -1867,9 +2056,11 @@ const Map3DView = forwardRef(function Map3DView(
           <strong>{hoverTooltip.title}</strong>
           <span>{hoverTooltip.subtitle}</span>
           <span className="dss-tt-cta">
-            {isSelectingDestination || !hoverTooltip.isFeature
+            {isSelectingDestination
               ? "Click map to set destination pin"
-              : "Click to inspect feature"}
+              : hoverTooltip.isFeature
+              ? "Click to inspect telemetry"
+              : "Drag to rotate · Scroll to zoom"}
           </span>
         </div>
       )}
@@ -1877,7 +2068,7 @@ const Map3DView = forwardRef(function Map3DView(
       {/* On-Map Destination & 3D Globe Navigation Controls in Bottom-Right */}
       <div className="dss-map3d-nav-controls">
         <span className="dss-nav-hint">
-          Click Map: Set Destination · Left-Drag: Orbit Globe · Right-Drag: Pan
+          Left-Drag: Rotate Globe · Right-Drag / Shift: Pan · Scroll: Zoom
         </span>
         <div className="dss-nav-btn-group">
           <button
@@ -1886,7 +2077,7 @@ const Map3DView = forwardRef(function Map3DView(
               isSelectingDestination ? "active" : ""
             }`}
             onClick={() => onToggleSelectDestination?.()}
-            title="Click here or click directly on the globe/map to choose destination"
+            title="Click to place or move a custom destination pin on the map"
           >
             {isSelectingDestination
               ? "Click Map to Place Pin..."
@@ -1944,7 +2135,7 @@ const Map3DView = forwardRef(function Map3DView(
             type="button"
             onClick={() => {
               threeRef.current.spherical.phi =
-                threeRef.current.spherical.phi > 0.42 ? 0.12 : 0.76;
+                threeRef.current.spherical.phi > 0.42 ? 0.12 : 0.72;
               clampCameraTargets();
             }}
             title="Toggle between oblique 3D horizon tilt and top-down South Polar view"
@@ -1956,11 +2147,11 @@ const Map3DView = forwardRef(function Map3DView(
             onClick={() => {
               threeRef.current.target.set(0, 0, 0);
               threeRef.current.spherical.radius = 158;
-              threeRef.current.spherical.phi = 0.68;
+              threeRef.current.spherical.phi = 0.64;
               threeRef.current.spherical.theta = 0.0;
               clampCameraTargets();
             }}
-            title="Reset 3D Globe orientation and center"
+            title="Reset 3D Globe center pivot and orientation"
           >
             Reset
           </button>

@@ -75,8 +75,44 @@ export function errorColor(v) {
   ];
 }
 
+export function riskColor(v, alphaScale = 1) {
+  const s = Math.min(1, Math.max(0, Number(v) || 0));
+  let r, g, b, a;
+  if (s < 0.25) {
+    // Safe (0.00 - 0.25): Deep navigable teal-emerald
+    const t = s / 0.25;
+    r = lerp(8, 16, t);
+    g = lerp(38, 168, t);
+    b = lerp(48, 120, t);
+    a = lerp(215, 232, t);
+  } else if (s < 0.5) {
+    // Caution (0.25 - 0.50): Emerald transition into calibrated amber-gold
+    const t = (s - 0.25) / 0.25;
+    r = lerp(20, 234, t);
+    g = lerp(168, 179, t);
+    b = lerp(115, 8, t);
+    a = lerp(232, 244, t);
+  } else if (s < 0.75) {
+    // High Risk (0.50 - 0.75): Amber into high-alert orange
+    const t = (s - 0.5) / 0.25;
+    r = lerp(234, 249, t);
+    g = lerp(179, 115, t);
+    b = lerp(8, 22, t);
+    a = lerp(244, 250, t);
+  } else {
+    // No-Go (>= 0.75): High-alert orange into crimson rose hazard
+    const t = (s - 0.75) / 0.25;
+    r = lerp(249, 225, t);
+    g = lerp(115, 29, t);
+    b = lerp(22, 72, t);
+    a = 255;
+  }
+  return [r, g, b, Math.round(a * alphaScale)];
+}
+
 export const sicRgba = sicColor;
 export const errorRgba = errorColor;
+export const riskRgba = riskColor;
 
 export function paintGrid(canvas, packed, mode = "sic", land = null) {
   const [h, w] = packed.shape;
@@ -95,7 +131,12 @@ export function paintGrid(canvas, packed, mode = "sic", land = null) {
       img.data[i * 4 + 3] = 255;
       continue;
     }
-    const c = mode === "error" ? errorColor(d[i]) : sicColor(d[i]);
+    const c =
+      mode === "risk"
+        ? riskColor(d[i])
+        : mode === "error"
+        ? errorColor(d[i])
+        : sicColor(d[i]);
     img.data.set(c, i * 4);
   }
   ctx.putImageData(img, 0, 0);
