@@ -936,11 +936,128 @@ export function buildWeatherEffectOverlays({
   // Suppress unused variable lint if weatherRisk not directly iterated here
   void weatherRisk;
 
+  // 5. Dense Windy.com-style Animated Wind & Current Curved Arc Tracks (for 60fps comet-streak particle trails)
+  const flowTracks = [];
+  const compassNames = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+  const arrowGlyphs = ["↑", "↗", "↗", "→", "→", "↘", "↘", "↓", "↓", "↙", "↙", "←", "←", "↖", "↖", "↑"];
+
+  for (let r = 5; r < H - 5; r += 7) {
+    for (let c = 5; c < W - 5; c += 7) {
+      const jitterR = ((r * 17 + c * 31) % 5) - 2;
+      const jitterC = ((r * 23 + c * 13) % 5) - 2;
+      const rr = Math.max(2, Math.min(H - 3, r + jitterR));
+      const cc = Math.max(2, Math.min(W - 3, c + jitterC));
+      const idx = rr * W + cc;
+      // Allow tracks over open ocean, marginal ice, and coastal katabatic slopes
+      if (surfData && surfData[idx] > 1 && (rr + cc) % 3 !== 0) continue;
+
+      const xm0 = xmin + (cc + 0.5) * cellW;
+      const ym0 = ymax - (rr + 0.5) * cellH;
+      const [lon0, lat0] = proj4("EPSG:3412", "EPSG:4326", [xm0, ym0]);
+
+      const wspd = windSpeedMs[idx] || 8.0;
+      const cspd = currentSpeedMs[idx] || 0.1;
+      const isKatabaticOrCoastal = lat0 <= -62.8;
+      const isCurrentTrack = (r + c) % 3 === 0;
+
+      // Build a smooth 10-point curved arc trajectory for the moving comet streak
+      const pts = [];
+      let curLon = lon0;
+      let curLat = lat0;
+      const lonStep = isKatabaticOrCoastal ? -0.48 : 0.54;
+      const latWave = 0.09 * Math.sin((lon0 * Math.PI) / 20 + phaseShift);
+
+      for (let s = 0; s < 10; s++) {
+        const [px, py] = proj4("EPSG:4326", "EPSG:3412", [curLon, curLat]);
+        pts.push([px, py]);
+        curLon += lonStep * (0.85 + 0.04 * s);
+        curLat +=
+          latWave +
+          (isKatabaticOrCoastal ? 0.055 : -0.03) *
+            Math.cos((curLon * Math.PI) / 18);
+      }
+
+      const dx = pts[pts.length - 1][0] - pts[0][0];
+      const dy = pts[pts.length - 1][1] - pts[0][1];
+      const angDeg = ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+      const compIdx = Math.round(angDeg / 22.5) % 16;
+      const compass = compassNames[compIdx];
+      const arrow = arrowGlyphs[compIdx];
+      const speedKmh = Math.round(wspd * 3.6);
+
+      flowTracks.push({
+        id: `ft-${r}-${c}`,
+        pts,
+        isCurrentTrack,
+        isKatabaticOrCoastal,
+        speedMs: wspd,
+        speedKmh,
+        currentCmS: Math.round(cspd * 100),
+        compass,
+        arrow,
+        phaseOffset: ((r * 37 + c * 53) % 100) / 100,
+        speedFactor: 0.65 + Math.min(0.85, wspd / 16),
+      });
+    }
+  }
+
+  // 6. Sleek Windy-Style Floating Speed + Direction Callout Pills on Globe & Map
+  const badgeSeeds = [
+    { id: "wb-bharati", name: "Bharati Shelf", lon: 76.2, lat: -67.8 },
+    { id: "wb-maitri", name: "Maitri Approach", lon: 11.8, lat: -68.2 },
+    { id: "wb-coop", name: "Cooperation Sea", lon: 62.5, lat: -63.0 },
+    { id: "wb-enderby", name: "Enderby Slope", lon: 45.0, lat: -64.8 },
+    { id: "wb-lazarev", name: "Lazarev Sea", lon: 18.0, lat: -63.2 },
+    { id: "wb-cosmonaut", name: "Cosmonaut Sea", lon: 33.5, lat: -62.5 },
+    { id: "wb-acc-east", name: "ACC Jet 60°S", lon: 52.0, lat: -58.8 },
+    { id: "wb-acc-west", name: "Weddell-Lazarev", lon: 2.5, lat: -60.5 },
+    { id: "wb-prydz", name: "Prydz Bay Gyre", lon: 72.5, lat: -65.2 },
+  ];
+
+  const windBadges = badgeSeeds.map((b, idx) => {
+    const [xm, ym] = proj4("EPSG:4326", "EPSG:3412", [b.lon, b.lat]);
+    const c = Math.max(0, Math.min(W - 1, Math.floor(((xm - xmin) / (xmax - xmin)) * W)));
+    const r = Math.max(0, Math.min(H - 1, Math.floor(((ymax - ym) / (ymax - ymin)) * H)));
+    const cellIdx = r * W + c;
+    const wspd = windSpeedMs[cellIdx] || 9.8;
+    const cspd = currentSpeedMs[cellIdx] || 0.14;
+    const speedKmh = Math.round(wspd * 3.6);
+    const isCoastal = b.lat <= -62.8;
+    const compass = isCoastal ? (idx % 2 === 0 ? "WSW" : "WNW") : (idx % 2 === 0 ? "ESE" : "ENE");
+    const arrow = isCoastal ? (idx % 2 === 0 ? "↙" : "↖") : (idx % 2 === 0 ? "↘" : "↗");
+    return {
+      id: b.id,
+      name: b.name,
+      lon: b.lon,
+      lat: b.lat,
+      xm,
+      ym,
+      speedKmh,
+      speedMs: wspd,
+      currentCmS: Math.round(cspd * 100),
+      compass,
+      arrow,
+      isPrimaryCallout: idx < 3,
+      inspect: {
+        kind: "Live Wind & Ocean Current Telemetry",
+        title: `${b.name} · ${speedKmh} km/h ${arrow} ${compass}`,
+        subtitle: `${Math.abs(b.lat).toFixed(1)}°S, ${Math.abs(b.lon).toFixed(1)}°E · Surface Current ${Math.round(cspd * 100)} cm/s`,
+        metrics: [
+          { label: "10m Wind Velocity", value: `${speedKmh} km/h (${wspd.toFixed(1)} m/s) ${arrow} ${compass}` },
+          { label: "Ocean Surface Current", value: `${Math.round(cspd * 100)} cm/s (${isCoastal ? "Antarctic Coastal Drift" : "ACC Eastward Stream"})` },
+          { label: "Pack-Ice Advection", value: `~${(wspd * 0.022 * 86.4).toFixed(1)} km/day drift forcing` },
+        ],
+      },
+    };
+  });
+
   return {
     windArrows,
     currentStreamlines,
     waveIndicators,
     weatherZones,
+    flowTracks,
+    windBadges,
   };
 }
 

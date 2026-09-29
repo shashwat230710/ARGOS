@@ -177,8 +177,34 @@ code,
 .dss-sidebar {
   background: var(--bg-panel);
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   display: flex;
   flex-direction: column;
+}
+
+.dss-sidebar::-webkit-scrollbar,
+.dss-drawer-body::-webkit-scrollbar,
+.dss-search-dropdown::-webkit-scrollbar,
+.dss-log-scroll::-webkit-scrollbar,
+.dss-subtabs::-webkit-scrollbar,
+.argos-landing-scroll::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.dss-drawer-body,
+.dss-search-dropdown,
+.dss-log-scroll,
+.dss-subtabs,
+.argos-landing-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dss-left {
@@ -191,11 +217,11 @@ code,
 
 /* Flat Structural Panels separated by 1px hairlines (No Cards-Within-Cards) */
 .dss-panel {
-  padding: 16px;
+  padding: 13px 15px;
   border-bottom: 1px solid var(--border-hairline);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
 }
 
 .dss-panel-last {
@@ -1937,6 +1963,51 @@ td.neg {
   font-size: 8.5px;
 }
 
+.dss-3d-label.kind-wind-callout {
+  border: 1.2px solid rgba(186, 230, 253, 0.65);
+  background: rgba(15, 23, 42, 0.94);
+  border-radius: 14px;
+  padding: 4px 10px;
+  box-shadow:
+    0 6px 18px rgba(2, 6, 23, 0.72),
+    0 0 12px rgba(56, 189, 248, 0.35);
+  z-index: 11;
+}
+
+.dss-3d-label.kind-wind-callout .dss-3d-lbl-title {
+  color: #f8fafc;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.dss-3d-label.kind-wind-callout .dss-3d-lbl-sub {
+  color: #7dd3fc;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.dss-3d-label.kind-wind-pill {
+  border: 1px solid rgba(165, 180, 252, 0.52);
+  background: rgba(67, 56, 202, 0.32);
+  backdrop-filter: blur(4px);
+  border-radius: 12px;
+  padding: 2.5px 8px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.5);
+}
+
+.dss-3d-label.kind-wind-pill .dss-3d-lbl-title {
+  color: #e0e7ff;
+  font-size: 8.5px;
+  font-weight: 600;
+}
+
+.dss-3d-label.kind-wind-pill .dss-3d-lbl-sub {
+  color: #bae6fd;
+  font-size: 8.5px;
+  font-weight: 700;
+}
+
 .dss-3d-label.kind-destination {
   border-color: #ec4899;
   background: rgba(50, 10, 35, 0.94);
@@ -2789,7 +2860,7 @@ td.neg {
   cursor: pointer;
 }
 
-/* Interactive Matching-Themed Scientific Landing Page (Zero Slop, Zero Emoji, 60-30-10 Obsidian Palette) */
+/* Interactive Matching-Themed Scientific Landing Page (Streamlined & Scroll-Reactive) */
 .argos-landing {
   position: fixed;
   inset: 0;
@@ -2797,16 +2868,51 @@ td.neg {
   background: var(--bg-obsidian);
   color: var(--text-primary);
   display: grid;
-  grid-template-rows: 56px 1fr;
+  grid-template-rows: 54px 1fr;
   overflow: hidden;
 }
 
+.argos-bg-globe-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 68% 46%,
+    rgba(10, 32, 58, 0.56) 0%,
+    rgba(7, 9, 14, 0.92) 72%,
+    #07090e 100%
+  );
+}
+
+.argos-scroll-progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2.5px;
+  background: rgba(148, 163, 184, 0.12);
+  z-index: 30;
+  pointer-events: none;
+}
+
+.argos-scroll-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #06b6d4, #a3e635);
+  transition: width 80ms linear;
+}
+
 .argos-landing-header {
+  position: relative;
+  z-index: 15;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 32px;
-  background: var(--bg-panel);
+  background: rgba(11, 15, 23, 0.82);
+  backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-hairline);
 }
 
@@ -2814,7 +2920,7 @@ td.neg {
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.04em;
   color: var(--text-primary);
   text-decoration: none;
   white-space: nowrap;
@@ -2823,21 +2929,29 @@ td.neg {
 .argos-landing-nav {
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 8px;
 }
 
-.argos-landing-nav a {
+.argos-landing-nav button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 5px 12px;
   color: var(--text-secondary);
-  text-decoration: none;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  transition: color 150ms ease;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 150ms ease;
 }
 
-.argos-landing-nav a:hover {
-  color: var(--accent-cyan);
+.argos-landing-nav button:hover {
+  color: var(--text-primary);
+}
+
+.argos-landing-nav button.active {
+  color: #67e8f9;
+  background: rgba(6, 182, 212, 0.14);
+  border-color: rgba(6, 182, 212, 0.45);
 }
 
 .argos-landing-actions {
@@ -2847,26 +2961,73 @@ td.neg {
 }
 
 .argos-cta-btn {
-  padding: 8px 16px;
+  padding: 7px 15px;
   font-size: 12px;
   white-space: nowrap;
 }
 
+/* Floating Scroll Section Navigation Dots on Right Edge */
+.argos-scroll-dots {
+  position: fixed;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.argos-scroll-dots button {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.32);
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  padding: 0;
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.argos-scroll-dots button.active {
+  background: var(--accent-cyan);
+  border-color: #bae6fd;
+  transform: scale(1.35);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.75);
+}
+
 .argos-landing-scroll {
+  position: relative;
+  z-index: 5;
   overflow-y: auto;
   overflow-x: hidden;
   scroll-behavior: smooth;
 }
 
+/* Scroll-reactive section transitions */
+.argos-hero-section,
+.argos-section {
+  transition: opacity 320ms ease, transform 320ms ease;
+}
+
 .argos-hero-section {
-  max-width: 1360px;
+  max-width: 1320px;
+  min-height: calc(100vh - 54px);
   margin: 0 auto;
-  padding: 48px 32px 44px;
+  padding: 36px 36px;
   display: grid;
-  grid-template-columns: 1.18fr 0.82fr;
-  gap: 40px;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 36px;
   align-items: center;
-  border-bottom: 1px solid var(--border-hairline);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.argos-hero-copy {
+  background: rgba(7, 9, 14, 0.72);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 26px 28px;
 }
 
 .argos-kicker {
@@ -2877,58 +3038,60 @@ td.neg {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--accent-cyan);
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .argos-hero-title {
   font-family: var(--font-display);
-  font-size: 36px;
+  font-size: clamp(28px, 2.9vw, 38px);
   font-weight: 700;
-  line-height: 1.14;
+  line-height: 1.12;
   letter-spacing: -0.025em;
   color: var(--text-primary);
   text-wrap: balance;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .argos-hero-lead {
-  font-size: 15px;
-  line-height: 1.65;
+  font-size: 14.5px;
+  line-height: 1.6;
   color: var(--text-secondary);
-  max-width: 68ch;
-  margin-bottom: 24px;
+  max-width: 56ch;
+  margin-bottom: 20px;
 }
 
 .argos-hero-cta-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 32px;
+  gap: 10px;
+  margin-bottom: 22px;
 }
 
 .argos-hero-primary {
-  padding: 10px 20px;
-  font-size: 13px;
+  flex: 0 0 auto;
+  padding: 10px 18px;
+  font-size: 12.5px;
 }
 
 .argos-hero-secondary {
+  flex: 0 0 auto;
   padding: 10px 16px;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .argos-proof-strip {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-  padding-top: 22px;
+  gap: 14px;
+  padding-top: 16px;
   border-top: 1px solid var(--border-hairline);
 }
 
 .argos-proof-cell {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 
 .argos-proof-label {
@@ -2940,7 +3103,7 @@ td.neg {
 
 .argos-proof-val {
   font-family: var(--font-mono);
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
@@ -2955,88 +3118,72 @@ td.neg {
 }
 
 .argos-proof-val small {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
   color: var(--text-muted);
-  margin-left: 6px;
+  margin-left: 4px;
 }
 
-.argos-proof-sub {
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-
-.argos-hero-visual {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-hairline);
-  border-radius: 6px;
-  padding: 16px;
+/* Minimal Unobstructed Right Hero Callout over Live 3D Globe & Icebergs */
+.argos-hero-live-badge {
+  justify-self: end;
+  align-self: end;
+  max-width: 360px;
+  background: rgba(7, 9, 14, 0.66);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  border-radius: 8px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  cursor: pointer;
-  transition: border-color 150ms ease;
-}
-
-.argos-hero-visual:hover {
-  border-color: var(--accent-cyan);
-}
-
-.argos-visual-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-muted);
-}
-
-.argos-hero-canvas {
-  width: 100%;
-  height: auto;
-  display: block;
-  background: #040811;
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  border-radius: 4px;
-}
-
-.argos-visual-legend {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
   gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-secondary);
 }
 
-.argos-visual-legend .dot {
-  display: inline-block;
+.argos-live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: #7dd3fc;
+}
+
+.argos-pulse-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  margin-right: 5px;
+  background: #a3e635;
+  box-shadow: 0 0 10px #a3e635;
 }
 
-.argos-visual-legend .dot.cyan {
+.argos-hero-live-badge p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.argos-scroll-cue-btn {
+  align-self: flex-start;
+  background: rgba(6, 182, 212, 0.15);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.45);
+  border-radius: 4px;
+  padding: 5px 11px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.argos-scroll-cue-btn:hover {
   background: var(--accent-cyan);
-}
-.argos-visual-legend .dot.rose {
-  background: var(--accent-rose);
-}
-.argos-visual-legend .dot.sky {
-  background: #38bdf8;
-}
-.argos-visual-legend .dot.amber {
-  background: var(--accent-amber);
+  color: #041017;
 }
 
+/* Concise Sections */
 .argos-section {
-  max-width: 1360px;
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 44px 32px;
-  border-bottom: 1px solid var(--border-hairline);
+  padding: 48px 36px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
 }
 
 .argos-section-last {
@@ -3047,8 +3194,9 @@ td.neg {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
+  gap: 20px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
 }
 
 .argos-section-kicker {
@@ -3056,7 +3204,7 @@ td.neg {
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--accent-cyan);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .argos-section-head h2 {
@@ -3068,238 +3216,343 @@ td.neg {
 }
 
 .argos-section-desc {
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--text-secondary);
-  max-width: 54ch;
 }
 
-.argos-arch-grid {
+/* Section 1: 3-Card Interactive Pipeline */
+.argos-tri-grid {
   display: grid;
-  grid-template-columns: 1fr 1.25fr;
-  gap: 24px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
 }
 
-.argos-arch-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.argos-arch-tab {
-  text-align: left;
-  background: var(--bg-panel);
+.argos-tri-card {
+  background: rgba(11, 15, 23, 0.82);
+  backdrop-filter: blur(10px);
   border: 1px solid var(--border-hairline);
-  border-radius: 5px;
-  padding: 14px 16px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: border-color 150ms ease, background-color 150ms ease;
-}
-
-.argos-arch-tab:hover {
-  border-color: rgba(56, 189, 248, 0.45);
-  color: var(--text-primary);
-}
-
-.argos-arch-tab.active {
-  background: rgba(6, 182, 212, 0.08);
-  border-color: var(--accent-cyan);
-  color: var(--text-primary);
-}
-
-.argos-arch-tab-top {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 14px;
-}
-
-.argos-arch-tab-meta {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.argos-arch-detail {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-hairline);
-  border-radius: 5px;
-  padding: 24px;
+  border-radius: 7px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 18px;
+  gap: 10px;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
 }
 
-.argos-arch-detail-head h3 {
-  font-family: var(--font-display);
-  font-size: 20px;
-  font-weight: 600;
-  margin: 4px 0;
+.argos-tri-card:hover,
+.argos-tri-card.active {
+  border-color: var(--accent-cyan);
+  background: rgba(11, 20, 34, 0.9);
+  transform: translateY(-2px);
 }
 
-.argos-meta-row {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-
-.argos-arch-prose {
-  font-size: 14.5px;
-  line-height: 1.65;
-  color: var(--text-secondary);
-}
-
-.argos-arch-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  padding: 14px 0;
-  border-top: 1px solid var(--border-hairline);
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.argos-arch-metric-box {
+.argos-tri-top {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.argos-arch-metric-box span {
+  align-items: center;
+  justify-content: space-between;
   font-size: 11px;
-  color: var(--text-muted);
 }
 
-.argos-arch-metric-box strong {
-  font-size: 16px;
-  color: var(--text-primary);
-}
-
-.argos-arch-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.argos-sim-panel {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-hairline);
-  border-radius: 5px;
-  padding: 24px;
-  display: grid;
-  grid-template-columns: 0.95fr 1.05fr;
-  gap: 28px;
-  align-items: center;
-}
-
-.argos-sim-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.argos-sim-kpi-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-}
-
-.argos-sim-kpi {
-  padding: 14px 16px;
-  background: var(--bg-obsidian);
-  border: 1px solid var(--border-hairline);
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.argos-sim-kpi span {
-  font-family: var(--font-mono);
+.argos-tri-tag {
   font-size: 10px;
   color: var(--text-muted);
 }
 
-.argos-sim-kpi strong {
-  font-size: 22px;
+.argos-tri-card h3 {
+  font-family: var(--font-display);
+  font-size: 16.5px;
   color: var(--text-primary);
 }
 
-.argos-sim-kpi strong.pos {
+.argos-tri-card p {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.argos-tri-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+}
+
+.argos-tri-foot strong {
+  color: #67e8f9;
+}
+
+.argos-tri-foot span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Section 2: Compact Route & Station Launcher */
+.argos-compact-sim {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  background: rgba(11, 15, 23, 0.84);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-hairline);
+  border-radius: 8px;
+  padding: 20px 22px;
+  align-items: center;
+}
+
+.argos-compact-sim-left {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.argos-compact-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.argos-compact-kpis > div {
+  background: rgba(7, 9, 14, 0.85);
+  border: 1px solid var(--border-hairline);
+  border-radius: 5px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.argos-compact-kpis span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-muted);
+}
+
+.argos-compact-kpis strong {
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.argos-compact-kpis strong.pos {
   color: var(--accent-emerald);
 }
 
-.argos-sim-kpi small {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.argos-station-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-}
-
-.argos-station-card {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-hairline);
-  border-radius: 5px;
-  padding: 18px;
+.argos-compact-sim-right {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.argos-st-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+.argos-sub-label {
+  font-size: 10px;
   color: var(--accent-cyan);
+  letter-spacing: 0.05em;
 }
 
-.argos-station-card h3 {
+.argos-mini-stations {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.argos-mini-st-btn {
+  background: rgba(7, 9, 14, 0.85);
+  border: 1px solid var(--border-hairline);
+  border-radius: 5px;
+  padding: 11px 13px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.argos-mini-st-btn:hover {
+  border-color: var(--accent-cyan);
+  background: rgba(6, 182, 212, 0.12);
+}
+
+.argos-mini-st-btn strong {
   font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 13.5px;
   color: var(--text-primary);
 }
 
-.argos-st-region {
-  font-size: 12.5px;
+.argos-mini-st-btn span {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* Section 3 (Finale): Interactive Titanic & Iceberg Collision Lab */
+.argos-titanic-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 22px;
+  align-items: stretch;
+}
+
+.argos-collision-card,
+.argos-titanic-panel {
+  background: rgba(11, 15, 23, 0.88);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(244, 63, 94, 0.36);
+  border-radius: 8px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.argos-titanic-panel {
+  border-color: rgba(56, 189, 248, 0.36);
+}
+
+.argos-collision-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.argos-collision-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.argos-collision-tabs button {
+  background: var(--bg-obsidian);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.argos-collision-tabs button.active {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fecdd3;
+  border-color: var(--accent-rose);
+  font-weight: 600;
+}
+
+.argos-collision-tabs button:last-child.active {
+  background: rgba(16, 185, 129, 0.18);
+  color: #a7f3d0;
+  border-color: var(--accent-emerald);
+}
+
+.argos-sim-speed-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
-.argos-st-elev {
-  font-size: 11px;
-  color: var(--text-muted);
+.argos-sim-speed-inline input[type="range"] {
+  width: 95px;
+  accent-color: var(--accent-amber);
+  cursor: pointer;
+}
+
+.argos-collision-canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-hairline);
+  background: #030711;
+  display: block;
+}
+
+.rose-text {
+  color: #fb7185;
+}
+
+.argos-titanic-head span {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.argos-titanic-head h3 {
+  font-family: var(--font-display);
+  font-size: 18px;
+  color: var(--text-primary);
   margin-bottom: 6px;
 }
 
-.argos-st-actions {
-  margin-top: auto;
+.argos-titanic-head p {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
 }
 
-.argos-dataset-table-wrap {
-  background: var(--bg-panel);
+.argos-titanic-compare {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-hairline);
   border-radius: 5px;
-  overflow-x: auto;
+  overflow: hidden;
+  background: rgba(7, 9, 14, 0.85);
 }
 
-.argos-dataset-table th,
-.argos-dataset-table td {
-  padding: 12px 16px;
+.argos-tc-row {
+  display: grid;
+  grid-template-columns: 0.9fr 1fr 1.05fr;
+  padding: 7px 12px;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--border-subtle);
+  align-items: center;
+  gap: 8px;
+}
+
+.argos-tc-row:last-child {
+  border-bottom: none;
+}
+
+.argos-tc-row.head {
+  background: var(--bg-panel);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.argos-tc-row .pos {
+  color: var(--accent-emerald);
+}
+
+.argos-titanic-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.argos-titanic-footer .dss-btn-primary {
+  flex: 0 0 auto;
 }
 
 .argos-landing-footer {
-  max-width: 1360px;
+  max-width: 1320px;
   margin: 0 auto;
-  padding: 24px 32px 36px;
+  padding: 20px 36px 32px;
   border-top: 1px solid var(--border-hairline);
   display: flex;
   align-items: center;
@@ -3332,6 +3585,241 @@ td.neg {
 .argos-footer-links button:hover {
   color: var(--accent-cyan);
   text-decoration: underline;
+}
+
+/* ============================================================================
+   Right Panel — Ship Navigation Animator (Spacious Multi-Row Bridge Controller)
+   ============================================================================ */
+.dss-ship-anim-box {
+  background: rgba(7, 11, 19, 0.92);
+  border: 1px solid rgba(163, 230, 53, 0.42);
+  border-radius: 6px;
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.dss-ship-anim-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dss-ship-anim-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #d9f99d;
+  letter-spacing: 0.03em;
+}
+
+.dss-anim-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.dss-anim-dot.sailing {
+  background: #a3e635;
+  box-shadow: 0 0 8px #a3e635;
+}
+
+.dss-ship-anim-badge {
+  font-size: 10px;
+  color: #67e8f9;
+  background: rgba(6, 182, 212, 0.14);
+  border: 1px solid rgba(6, 182, 212, 0.35);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.dss-ship-anim-telemetry {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.dss-ship-anim-telemetry > div {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  padding: 5px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dss-ship-anim-telemetry span {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--text-muted);
+}
+
+.dss-ship-anim-telemetry strong {
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.dss-ship-anim-telemetry strong.warn-text {
+  color: var(--accent-rose);
+}
+
+.dss-ship-anim-scrubber {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dss-ship-anim-scrub-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  color: var(--text-muted);
+}
+
+.dss-ship-anim-scrubber input[type="range"] {
+  width: 100%;
+  accent-color: #a3e635;
+  cursor: pointer;
+}
+
+.dss-ship-anim-primary-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.dss-sail-toggle {
+  background: rgba(163, 230, 53, 0.16);
+  color: #ecfccb;
+  border: 1px solid #a3e635;
+  border-radius: 4px;
+  padding: 7px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.dss-sail-toggle.sailing {
+  background: #a3e635;
+  color: #07090e;
+  box-shadow: 0 0 12px rgba(163, 230, 53, 0.35);
+}
+
+.dss-sail-follow {
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  padding: 7px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.dss-sail-follow:hover {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.dss-sail-follow.active {
+  background: rgba(6, 182, 212, 0.2);
+  color: #67e8f9;
+  border-color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.dss-ship-anim-speed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dss-speed-label {
+  font-size: 9.5px;
+  color: var(--text-muted);
+}
+
+.dss-sail-speeds {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-panel);
+  padding: 3px;
+  border-radius: 4px;
+  border: 1px solid var(--border-hairline);
+}
+
+.dss-sail-speeds button {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 3px 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.dss-sail-speeds button:hover {
+  color: var(--text-primary);
+}
+
+.dss-sail-speeds button.active {
+  background: rgba(163, 230, 53, 0.22);
+  color: #d9f99d;
+  border-color: #a3e635;
+  font-weight: 700;
+}
+
+.dss-sail-nudge {
+  display: flex;
+  gap: 4px;
+}
+
+.dss-sail-nudge button {
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  border-radius: 3px;
+  width: 24px;
+  height: 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dss-sail-nudge button:hover {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+@media (max-width: 1100px) {
+  .argos-hero-section,
+  .argos-tri-grid,
+  .argos-compact-sim,
+  .argos-titanic-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 

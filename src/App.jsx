@@ -286,6 +286,10 @@ export default function App() {
   );
   const [selectedTarget, setSelectedTarget] = useState(null);
   const [shipStepIdx, setShipStepIdx] = useState(null);
+  const [smoothShipStep, setSmoothShipStep] = useState(0);
+  const [isShipSailing, setIsShipSailing] = useState(true);
+  const [shipSailSpeed, setShipSailSpeed] = useState(1.0);
+  const smoothShipRef = useRef(0);
   const [autoFollowShip, setAutoFollowShip] = useState(false);
   const [showShipBridge, setShowShipBridge] = useState(false);
 
@@ -832,7 +836,7 @@ export default function App() {
     mlStatus?.model?.totalEpochs,
   ]);
 
-  // 5. Play animation timer for timeline
+  // 5. Play animation timer for timeline & smooth continuous ship navigation
   useEffect(() => {
     if (!isPlaying) return;
     const id = setInterval(() => {
@@ -840,9 +844,76 @@ export default function App() {
         if (prev >= 7) return -6;
         return prev + 1;
       });
-    }, 650);
+    }, 850);
     return () => clearInterval(id);
   }, [isPlaying]);
+
+  // 5a. Continuous 60fps Ship Navigation Animator (when isShipSailing is active)
+  useEffect(() => {
+    if (!isShipSailing) return;
+    const fcXy = routeData?.forecast_aware?.xy;
+    if (!fcXy || fcXy.length < 2) return;
+    const maxIdx = fcXy.length - 1;
+
+    let animId = 0;
+    let lastTs = performance.now();
+
+    const stepSail = (now) => {
+      animId = requestAnimationFrame(stepSail);
+      const dt = Math.min(0.06, (now - lastTs) / 1000);
+      lastTs = now;
+
+      let nextVal = smoothShipRef.current + dt * 4.2 * shipSailSpeed;
+      if (nextVal >= maxIdx) {
+        nextVal = 0;
+      }
+      smoothShipRef.current = nextVal;
+      setSmoothShipStep(nextVal);
+
+      // Keep timeline lead day (+1d..+7d) synchronized with ship voyage progress
+      const syncedLead = Math.max(
+        1,
+        Math.min(7, Math.ceil(((nextVal + 0.01) / maxIdx) * 7))
+      );
+      setTimelineStep((prev) => (prev === syncedLead ? prev : syncedLead));
+    };
+
+    animId = requestAnimationFrame(stepSail);
+    return () => cancelAnimationFrame(animId);
+  }, [isShipSailing, shipSailSpeed, routeData]);
+
+  // 5a-2. Smoothly tween ship position between waypoints whenever timelineStep or shipStepIdx changes
+  useEffect(() => {
+    if (isShipSailing) return;
+    const fcXy = routeData?.forecast_aware?.xy;
+    if (!fcXy || fcXy.length < 2) return;
+    const maxIdx = fcXy.length - 1;
+
+    const target =
+      shipStepIdx !== null
+        ? Math.max(0, Math.min(maxIdx, shipStepIdx))
+        : Math.min(
+            maxIdx,
+            Math.max(0, (Math.max(0, timelineStep) / 7) * maxIdx)
+          );
+
+    let animId = 0;
+    const animateTween = () => {
+      const cur = smoothShipRef.current;
+      const diff = target - cur;
+      if (Math.abs(diff) < 0.008) {
+        smoothShipRef.current = target;
+        setSmoothShipStep(target);
+        return;
+      }
+      const next = cur + diff * 0.14;
+      smoothShipRef.current = next;
+      setSmoothShipStep(next);
+      animId = requestAnimationFrame(animateTween);
+    };
+    animId = requestAnimationFrame(animateTween);
+    return () => cancelAnimationFrame(animId);
+  }, [timelineStep, shipStepIdx, routeData, isShipSailing]);
 
   // 5b. Compute Multi-Factor Polar Risk Fields (Ice, Iceberg, Weather, Ocean, Combined) & Adaptive H3 Hex Grid
   const currentSicSlice = useMemo(() => {
@@ -1259,128 +1330,51 @@ export default function App() {
       }
     }
 
-    // 5. Weather & Ocean Figures on 2D Chart (High Ocean Currents, Katabatic/Gale Winds, Swell Waves & Polar Low Zones)
+    // 5. Speed & Direction Badges on 2D Chart (Animated short wind wisps are drawn in pulseSourceRef)
     if (showWeatherFigures && weatherOverlays) {
-      // 5a. Severe Weather & Katabatic Gale Zones
-      if (weatherOverlays.weatherZones?.length) {
-        for (const wz of weatherOverlays.weatherZones) {
-          const wzFeat = new Feature({
-            geometry: new Polygon([wz.ringXy]),
-            inspect: wz.inspect,
+      if (weatherOverlays.windBadges?.length) {
+        for (const wb of weatherOverlays.windBadges) {
+          const wbFeat = new Feature({
+            geometry: new Point([wb.xm, wb.ym]),
+            inspect: wb.inspect,
           });
-          wzFeat.setStyle(
+          const badgeText = wb.isPrimaryCallout
+            ? `${wb.name}\n${wb.speedKmh} km/h ${wb.arrow} ${wb.compass}`
+            : `${wb.name}\n${wb.speedKmh} ${wb.arrow}`;
+          wbFeat.setStyle(
             new Style({
-              fill: new Fill({ color: "rgba(249, 115, 22, 0.11)" }),
-              stroke: new Stroke({
-                color: "rgba(251, 146, 60, 0.85)",
-                width: 1.8,
-                lineDash: [6, 4],
+              image: new CircleStyle({
+                radius: wb.isPrimaryCallout ? 4.2 : 3.2,
+                fill: new Fill({
+                  color: wb.isPrimaryCallout ? "#38bdf8" : "#7dd3fc",
+                }),
+                stroke: new Stroke({ color: "#07090e", width: 1.6 }),
               }),
               text: new TextStyle({
-                text: `WX: ${wz.title.split("&")[0].trim().toUpperCase()}`,
-                font: "600 9px 'JetBrains Mono', monospace",
-                fill: new Fill({ color: "#fdba74" }),
-                stroke: new Stroke({ color: "#07090e", width: 3 }),
+                text: badgeText,
+                offsetY: -18,
+                font: wb.isPrimaryCallout
+                  ? "700 10px 'Inter', 'JetBrains Mono', sans-serif"
+                  : "600 9.5px 'Inter', 'JetBrains Mono', sans-serif",
+                fill: new Fill({
+                  color: wb.isPrimaryCallout ? "#f8fafc" : "#bae6fd",
+                }),
+                backgroundFill: new Fill({
+                  color: wb.isPrimaryCallout
+                    ? "rgba(15, 23, 42, 0.92)"
+                    : "rgba(14, 116, 144, 0.32)",
+                }),
+                backgroundStroke: new Stroke({
+                  color: wb.isPrimaryCallout
+                    ? "rgba(148, 163, 184, 0.45)"
+                    : "rgba(125, 211, 252, 0.52)",
+                  width: 1.1,
+                }),
+                padding: [3, 6, 3, 6],
               }),
             })
           );
-          src.addFeature(wzFeat);
-        }
-      }
-
-      // 5b. High Ocean Currents (Antarctic Coastal Current & ACC Streamlines)
-      if (weatherOverlays.currentStreamlines?.length) {
-        weatherOverlays.currentStreamlines.forEach((cur, idx) => {
-          const curFeat = new Feature({
-            geometry: new LineString(cur.pts),
-            inspect: cur.inspect,
-          });
-          const curColor = cur.isCoastalCurrent
-            ? "rgba(56, 189, 248, 0.86)"
-            : "rgba(129, 140, 248, 0.86)";
-          curFeat.setStyle(
-            new Style({
-              stroke: new Stroke({
-                color: curColor,
-                width: 2.3,
-              }),
-              text:
-                idx % 5 === 0
-                  ? new TextStyle({
-                      text: cur.isCoastalCurrent
-                        ? `COASTAL CURRENT · ${(cur.speedMs * 100).toFixed(0)} cm/s W`
-                        : `HIGH CURRENT (ACC) · ${(cur.speedMs * 100).toFixed(0)} cm/s E`,
-                      font: "600 8.5px 'JetBrains Mono', monospace",
-                      fill: new Fill({
-                        color: cur.isCoastalCurrent ? "#7dd3fc" : "#c7d2fe",
-                      }),
-                      stroke: new Stroke({ color: "#07090e", width: 2.8 }),
-                      offsetY: -8,
-                    })
-                  : undefined,
-            })
-          );
-          src.addFeature(curFeat);
-        });
-      }
-
-      // 5c. Strong 10m Wind Vectors (U10 Katabatic & Polar Gales)
-      if (weatherOverlays.windArrows?.length) {
-        for (const w of weatherOverlays.windArrows) {
-          const dx = w.x1 - w.x0;
-          const dy = w.y1 - w.y0;
-          const len = Math.hypot(dx, dy) || 1;
-          const ux = dx / len;
-          const uy = dy / len;
-          const ah = 20000;
-          const wColor = w.isSevere
-            ? "rgba(251, 146, 60, 0.88)"
-            : "rgba(192, 132, 252, 0.82)";
-          const wFeat = new Feature({
-            geometry: new LineString([
-              [w.x0, w.y0],
-              [w.x1, w.y1],
-              [w.x1 - ux * ah - uy * (ah * 0.48), w.y1 - uy * ah + ux * (ah * 0.48)],
-              [w.x1, w.y1],
-              [w.x1 - ux * ah + uy * (ah * 0.48), w.y1 - uy * ah - ux * (ah * 0.48)],
-            ]),
-            inspect: w.inspect,
-          });
-          wFeat.setStyle(
-            new Style({
-              stroke: new Stroke({
-                color: wColor,
-                width: 1.7,
-              }),
-            })
-          );
-          src.addFeature(wFeat);
-        }
-      }
-
-      // 5d. High Wave Swell Chevrons
-      if (weatherOverlays.waveIndicators?.length) {
-        for (const wv of weatherOverlays.waveIndicators) {
-          const wvStyle = new Style({
-            stroke: new Stroke({
-              color: wv.isRough
-                ? "rgba(244, 63, 94, 0.82)"
-                : "rgba(56, 189, 248, 0.72)",
-              width: 1.6,
-            }),
-          });
-          const f1 = new Feature({
-            geometry: new LineString(wv.crest1),
-            inspect: wv.inspect,
-          });
-          const f2 = new Feature({
-            geometry: new LineString(wv.crest2),
-            inspect: wv.inspect,
-          });
-          f1.setStyle(wvStyle);
-          f2.setStyle(wvStyle);
-          src.addFeature(f1);
-          src.addFeature(f2);
+          src.addFeature(wbFeat);
         }
       }
     }
@@ -1609,19 +1603,12 @@ export default function App() {
     }
   }, [scenario, showStations, showRoads, selectedDestination]);
 
-  // Compute active ship step index and live ship telemetry
+  // Compute active ship step index and smoothly interpolated live ship telemetry
   const activeShipIdx = useMemo(() => {
     const fcXy = routeData?.forecast_aware?.xy;
     if (!fcXy || fcXy.length < 2) return 0;
-    if (shipStepIdx !== null) {
-      return Math.max(0, Math.min(fcXy.length - 1, shipStepIdx));
-    }
-    const leadDay = Math.max(0, timelineStep);
-    return Math.min(
-      fcXy.length - 1,
-      Math.max(0, Math.floor((leadDay / 7) * (fcXy.length - 1)))
-    );
-  }, [routeData, shipStepIdx, timelineStep]);
+    return Math.max(0, Math.min(fcXy.length - 1, Math.round(smoothShipStep)));
+  }, [routeData, smoothShipStep]);
 
   const activeShipTelemetry = useMemo(() => {
     const fcXy = routeData?.forecast_aware?.xy;
@@ -1630,32 +1617,74 @@ export default function App() {
       routeData?.forecast_aware?.metrics?.step_telemetry ||
       [];
     if (!fcXy || fcXy.length < 2) return null;
-    const idx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
-    const coord = fcXy[idx];
-    const nextCoord = fcXy[Math.min(fcXy.length - 1, idx + 1)] || coord;
-    const rawTel = fcStepTel[idx] || {};
-    const [lon, lat] =
-      rawTel.lon != null && rawTel.lat != null
-        ? [rawTel.lon, rawTel.lat]
-        : proj4("EPSG:3412", "EPSG:4326", coord);
+
+    const maxIdx = fcXy.length - 1;
+    const s = Math.max(0, Math.min(maxIdx, smoothShipStep));
+    const i0 = Math.min(fcXy.length - 2, Math.floor(s));
+    const i1 = i0 + 1;
+    const frac = s - i0;
+
+    const c0 = fcXy[i0];
+    const c1 = fcXy[i1] || c0;
+    const x_m = c0[0] + (c1[0] - c0[0]) * frac;
+    const y_m = c0[1] + (c1[1] - c0[1]) * frac;
+
+    // Smooth lookahead point along route polyline for fluid vessel heading orientation
+    const sLook = Math.min(maxIdx, s + 0.75);
+    const l0 = Math.min(fcXy.length - 2, Math.floor(sLook));
+    const l1 = l0 + 1;
+    const lFrac = sLook - l0;
+    let next_x_m =
+      fcXy[l0][0] + (fcXy[l1][0] - fcXy[l0][0]) * lFrac;
+    let next_y_m =
+      fcXy[l0][1] + (fcXy[l1][1] - fcXy[l0][1]) * lFrac;
+    if (Math.hypot(next_x_m - x_m, next_y_m - y_m) < 10) {
+      next_x_m = x_m + (c1[0] - c0[0]);
+      next_y_m = y_m + (c1[1] - c0[1]);
+    }
+
+    const tel0 = fcStepTel[i0] || {};
+    const tel1 = fcStepTel[i1] || tel0;
+    const [lon, lat] = proj4("EPSG:3412", "EPSG:4326", [x_m, y_m]);
+
+    const h0 = tel0.hour ?? i0 * 2.1;
+    const h1 = tel1.hour ?? i1 * 2.1;
+    const hour = Number((h0 + (h1 - h0) * frac).toFixed(1));
+
+    const sic0 = tel0.sic ?? 0.08;
+    const sic1 = tel1.sic ?? sic0;
+    const sic = sic0 + (sic1 - sic0) * frac;
+
+    const sp0 = tel0.speed_kmh ?? 22.5;
+    const sp1 = tel1.speed_kmh ?? sp0;
+    const speed_kmh = Number((sp0 + (sp1 - sp0) * frac).toFixed(1));
+
+    const cog0 = tel0.cog_deg ?? 165;
+    const cog1 = tel1.cog_deg ?? cog0;
+    const dCog = ((cog1 - cog0 + 540) % 360) - 180;
+    const cog_deg = Math.round((cog0 + dCog * frac + 360) % 360);
+
     return {
-      idx,
+      idx: Math.round(s),
+      smoothStep: s,
+      segIdx: i0,
+      segFrac: frac,
       totalSteps: fcXy.length,
-      progressPct: Math.round((idx / Math.max(1, fcXy.length - 1)) * 100),
-      x_m: coord[0],
-      y_m: coord[1],
-      next_x_m: nextCoord[0],
-      next_y_m: nextCoord[1],
-      row: rawTel.row ?? shipPos?.row ?? 0,
-      col: rawTel.col ?? shipPos?.col ?? 0,
+      progressPct: Math.round((s / Math.max(1, maxIdx)) * 100),
+      x_m,
+      y_m,
+      next_x_m,
+      next_y_m,
+      row: tel0.row ?? shipPos?.row ?? 0,
+      col: tel0.col ?? shipPos?.col ?? 0,
       lon,
       lat,
-      hour: rawTel.hour ?? Math.round(idx * 2.1),
-      sic: rawTel.sic ?? 0.08,
-      speed_kmh: rawTel.speed_kmh ?? 22.5,
-      cog_deg: rawTel.cog_deg ?? 165,
+      hour,
+      sic,
+      speed_kmh,
+      cog_deg,
     };
-  }, [routeData, activeShipIdx, shipPos]);
+  }, [routeData, smoothShipStep, shipPos]);
 
   // "Choose Where I Want to Go" — Pick Destination on 3D or 2D Map or from Search
   async function handlePickDestinationPoint({
@@ -2086,9 +2115,18 @@ export default function App() {
       );
       src.addFeature(fcCaseFeat);
 
-      const splitIdx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
-      const wakeCoords = fcXy.slice(0, splitIdx + 1);
-      const forwardCoords = fcXy.slice(splitIdx);
+      const segIdx = Math.max(
+        0,
+        Math.min(
+          fcXy.length - 2,
+          activeShipTelemetry?.segIdx ?? activeShipIdx
+        )
+      );
+      const exactShipPt = activeShipTelemetry
+        ? [activeShipTelemetry.x_m, activeShipTelemetry.y_m]
+        : fcXy[segIdx];
+      const wakeCoords = [...fcXy.slice(0, segIdx + 1), exactShipPt];
+      const forwardCoords = [exactShipPt, ...fcXy.slice(segIdx + 1)];
 
       // Completed vessel wake behind ship
       if (wakeCoords.length > 1) {
@@ -2288,19 +2326,24 @@ export default function App() {
         src.addFeature(wpFeat);
       }
 
-      // E. High-Visibility Oriented Vessel Hull Marker + Target Lock Crosshair + Heading Vector (RV POLAR EXPLORER)
+      // E. High-Visibility Oriented Vessel Hull Marker + Kelvin Wake + Target Lock Crosshair (RV POLAR EXPLORER)
       const idx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
-      const shipCoord = fcXy[idx] || fcXy[0];
-      const nextCoord = fcXy[Math.min(fcXy.length - 1, idx + 1)] || shipCoord;
-      const prevCoord = fcXy[Math.max(0, idx - 1)] || shipCoord;
-      const tel = fcTelemetry[idx] || {
-        lon: 52.5,
-        lat: -56.0,
-        hour: 0,
-        sic: 0,
-        speed_kmh: 22.0,
-        cog_deg: 145,
-      };
+      const shipCoord = activeShipTelemetry
+        ? [activeShipTelemetry.x_m, activeShipTelemetry.y_m]
+        : fcXy[idx] || fcXy[0];
+      const nextCoord = activeShipTelemetry
+        ? [activeShipTelemetry.next_x_m, activeShipTelemetry.next_y_m]
+        : fcXy[Math.min(fcXy.length - 1, idx + 1)] || shipCoord;
+      const prevCoord = shipCoord;
+      const tel = activeShipTelemetry ||
+        fcTelemetry[idx] || {
+          lon: 52.5,
+          lat: -56.0,
+          hour: 0,
+          sic: 0,
+          speed_kmh: 22.0,
+          cog_deg: 145,
+        };
 
       const dxShip = nextCoord[0] - prevCoord[0];
       const dyShip = nextCoord[1] - prevCoord[1];
@@ -2378,6 +2421,37 @@ export default function App() {
         })
       );
       src.addFeature(leaderFeat);
+
+      // 2b. Kelvin V-Wave Stern Wake Arms behind 2D Ship Hull
+      const wakeArmLen = 115000;
+      const wakeSpread = 46000;
+      const sternPt = [
+        shipCoord[0] - ux * 42000,
+        shipCoord[1] - uy * 42000,
+      ];
+      const wakeVFeat = new Feature({
+        geometry: new LineString([
+          [
+            sternPt[0] - ux * wakeArmLen + px * wakeSpread,
+            sternPt[1] - uy * wakeArmLen + py * wakeSpread,
+          ],
+          sternPt,
+          [
+            sternPt[0] - ux * wakeArmLen - px * wakeSpread,
+            sternPt[1] - uy * wakeArmLen - py * wakeSpread,
+          ],
+        ]),
+      });
+      wakeVFeat.setStyle(
+        new Style({
+          stroke: new Stroke({
+            color: "rgba(34, 211, 238, 0.72)",
+            width: 2.2,
+            lineDash: [5, 3],
+          }),
+        })
+      );
+      src.addFeature(wakeVFeat);
 
       // 3. Enlarged High-Visibility Neon Lime-Chartreuse Icebreaker Ship Hull Polygon
       const hullLen = 78000;
@@ -2466,28 +2540,116 @@ export default function App() {
     showRoutes,
     showCourseCorrections,
     activeShipIdx,
+    activeShipTelemetry,
     scenario,
     wRisk,
   ]);
 
-  // 8b. Real-Time Animated Optimal Path Flow Indicator & Expanding Ship Location Sonar Beacon
+  // 8b. Real-Time Animated Optimal Path Flow Indicator, Expanding Ship Beacon & Windy.com Comet Streaks
   useEffect(() => {
     const src = pulseSourceRef.current;
-    if (!routeData?.forecast_aware?.xy || !showRoutes) {
+    const hasRoutePulse = Boolean(routeData?.forecast_aware?.xy && showRoutes);
+    const hasWindComets = Boolean(
+      showWeatherFigures && weatherOverlays?.flowTracks?.length
+    );
+    if (!hasRoutePulse && !hasWindComets) {
       src.clear();
       return;
     }
 
     let phase = 0;
     const timer = setInterval(() => {
-      phase = (phase + 0.045) % 1;
+      phase = (phase + 0.032) % 1;
       src.clear();
 
+      // A. Short Moving Wind & Current Wisps on 2D Chart (Zero Long Static Purple Lines)
+      if (hasWindComets) {
+        const tracks = weatherOverlays.flowTracks;
+        for (let t = 0; t < tracks.length; t++) {
+          const ft = tracks[t];
+          const pts = ft.pts;
+          if (!pts || pts.length < 4) continue;
+
+          const samplePt = (u) => {
+            const scaled = Math.max(
+              0,
+              Math.min(pts.length - 1.0001, u * (pts.length - 1))
+            );
+            const i0 = Math.floor(scaled);
+            const f = scaled - i0;
+            const p0 = pts[i0];
+            const p1 = pts[i0 + 1] || p0;
+            return [p0[0] + (p1[0] - p0[0]) * f, p0[1] + (p1[1] - p0[1]) * f];
+          };
+
+          for (const shift of [0, 0.5]) {
+            const localPhase =
+              (phase * ft.speedFactor + ft.phaseOffset + shift) % 1;
+            const tailLen = 0.12;
+            const headT = localPhase;
+            const tailT = Math.max(0, headT - tailLen);
+            if (headT - tailT < 0.025) continue;
+
+            const pTail = samplePt(tailT);
+            const pMid = samplePt(tailT + (headT - tailT) * 0.55);
+            const pHead = samplePt(headT);
+
+            const tailFeat = new Feature({
+              geometry: new LineString([pTail, pMid]),
+            });
+            tailFeat.setStyle(
+              new Style({
+                stroke: new Stroke({
+                  color: ft.isCurrentTrack
+                    ? "rgba(14, 165, 233, 0.42)"
+                    : "rgba(125, 211, 252, 0.38)",
+                  width: 1.4,
+                }),
+              })
+            );
+            src.addFeature(tailFeat);
+
+            const headArcFeat = new Feature({
+              geometry: new LineString([pMid, pHead]),
+            });
+            headArcFeat.setStyle(
+              new Style({
+                stroke: new Stroke({
+                  color: ft.isCurrentTrack
+                    ? "rgba(125, 211, 252, 0.92)"
+                    : "rgba(240, 249, 255, 0.92)",
+                  width: 2.2,
+                }),
+              })
+            );
+            src.addFeature(headArcFeat);
+
+            const tipFeat = new Feature({
+              geometry: new Point(pHead),
+            });
+            tipFeat.setStyle(
+              new Style({
+                image: new CircleStyle({
+                  radius: 1.8,
+                  fill: new Fill({
+                    color: ft.isCurrentTrack ? "#7dd3fc" : "#f8fafc",
+                  }),
+                }),
+              })
+            );
+            src.addFeature(tipFeat);
+          }
+        }
+      }
+
+      if (!hasRoutePulse) return;
       const fcXy = routeData.forecast_aware.xy;
       if (!fcXy || fcXy.length < 2) return;
 
       const shipIdx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
-      const shipCoord = fcXy[shipIdx];
+      const shipCoord = activeShipTelemetry
+        ? [activeShipTelemetry.x_m, activeShipTelemetry.y_m]
+        : fcXy[shipIdx];
 
       // 1. Dual Expanding Sonar Beacon Rings around Ship Location
       for (let ringIdx = 0; ringIdx < 2; ringIdx++) {
@@ -2554,10 +2716,17 @@ export default function App() {
           src.addFeature(chevFeat);
         }
       }
-    }, 65);
+    }, 55);
 
     return () => clearInterval(timer);
-  }, [routeData, showRoutes, activeShipIdx]);
+  }, [
+    routeData,
+    showRoutes,
+    activeShipIdx,
+    activeShipTelemetry,
+    showWeatherFigures,
+    weatherOverlays,
+  ]);
 
   // 9. Update Real-World Tabular Icebergs, Past Scatterometer Tracks, 7-Day Predicted Paths & Swept Cones
   useEffect(() => {
@@ -2834,9 +3003,17 @@ export default function App() {
     }
   }
 
-  // Handler: Advance 1 day along planned route
+  // Handler: Advance +1 Day smoothly along planned route (glides ship along trajectory, or replans at end of window)
   async function handleAdvanceDay() {
     if (!routeData?.forecast_aware?.path?.length) return;
+    setIsShipSailing(false);
+    setShipStepIdx(null);
+
+    if (timelineStep < 7) {
+      setTimelineStep((prev) => Math.min(7, Math.max(1, prev + 1)));
+      return;
+    }
+
     const path = routeData.forecast_aware.path;
     const stepIdx = Math.min(path.length - 1, 8);
     const [nextRow, nextCol] = path[stepIdx];
@@ -2854,6 +3031,9 @@ export default function App() {
       });
       setShipPos({ row: nextRow, col: nextCol });
       setDate(res.date);
+      setTimelineStep(1);
+      smoothShipRef.current = 0;
+      setSmoothShipStep(0);
       if (res.icebergs) setIcebergs(res.icebergs);
     } catch (err) {
       setErrorMsg(err.message);
@@ -2863,6 +3043,10 @@ export default function App() {
   }
 
   function handleResetVoyage() {
+    setIsShipSailing(false);
+    setShipStepIdx(null);
+    smoothShipRef.current = 0;
+    setSmoothShipStep(0);
     setShipPos(null);
     if (scenario?.d0) setDate(scenario.d0);
     setTimelineStep(1);
@@ -2943,6 +3127,9 @@ export default function App() {
             setShowLanding(false);
             if (opts?.enableSelectDestination) {
               setIsSelectingDestination(true);
+            }
+            if (opts?.focusShip) {
+              setTimeout(() => handleZoomToShip(true), 80);
             }
           }}
           onLaunchStationDestination={({ lon, lat, name, legPreset }) => {
@@ -3576,6 +3763,17 @@ export default function App() {
               </button>
               <button
                 type="button"
+                className={`dss-ctrl-btn ${isShipSailing ? "active" : ""}`}
+                onClick={() => {
+                  setShipStepIdx(null);
+                  setIsShipSailing((s) => !s);
+                }}
+                title="Toggle smooth continuous ship navigation animation along optimal route"
+              >
+                {isShipSailing ? "⏸ Sailing" : "▶ Sail Ship"}
+              </button>
+              <button
+                type="button"
                 className={`dss-ctrl-btn ${showMapLegend ? "active" : ""}`}
                 onClick={() => setShowMapLegend(!showMapLegend)}
                 title="Toggle Map Legend"
@@ -3911,6 +4109,25 @@ export default function App() {
                 <div className="dss-sb-actions">
                   <button
                     type="button"
+                    className={isShipSailing ? "active" : ""}
+                    onClick={() => {
+                      setShipStepIdx(null);
+                      setIsShipSailing((s) => !s);
+                    }}
+                    title="Animate or pause live ship navigation"
+                  >
+                    {isShipSailing ? "⏸ Pause" : "▶ Sail"}
+                  </button>
+                  <button
+                    type="button"
+                    className={autoFollowShip ? "active" : ""}
+                    onClick={() => setAutoFollowShip((f) => !f)}
+                    title="Lock camera onto moving ship"
+                  >
+                    {autoFollowShip ? "Following" : "Follow"}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => handleZoomToShip(true)}
                     title="Center and zoom map onto ship"
                   >
@@ -3990,10 +4207,15 @@ export default function App() {
                       type="range"
                       min={0}
                       max={Math.max(1, activeShipTelemetry.totalSteps - 1)}
-                      value={activeShipTelemetry.idx}
-                      onChange={(e) =>
-                        setShipStepIdx(Number(e.target.value))
-                      }
+                      step={0.1}
+                      value={activeShipTelemetry.smoothStep ?? activeShipTelemetry.idx}
+                      onChange={(e) => {
+                        setIsShipSailing(false);
+                        const v = Number(e.target.value);
+                        smoothShipRef.current = v;
+                        setSmoothShipStep(v);
+                        setShipStepIdx(v);
+                      }}
                     />
                   </div>
                 </div>
@@ -4148,24 +4370,185 @@ export default function App() {
               />
             </div>
 
+            {/* Live Ship Navigation Animator Card (Well-Spaced Multi-Row Interactive Controller) */}
+            <div className="dss-ship-anim-box">
+              <div className="dss-ship-anim-top">
+                <div className="dss-ship-anim-status">
+                  <span
+                    className={`dss-anim-dot ${
+                      isShipSailing ? "sailing" : "paused"
+                    }`}
+                  />
+                  <span className="mono">SHIP NAVIGATION ANIMATOR</span>
+                </div>
+                <span className="mono dss-ship-anim-badge">
+                  {activeShipTelemetry
+                    ? `${activeShipTelemetry.progressPct}% · T+${Math.round(
+                        activeShipTelemetry.hour
+                      )}h`
+                    : "Ready"}
+                </span>
+              </div>
+
+              {/* Live Sub-Waypoint Telemetry Readout Strip */}
+              {activeShipTelemetry && (
+                <div className="dss-ship-anim-telemetry">
+                  <div>
+                    <span>HEADING</span>
+                    <strong className="mono">
+                      {activeShipTelemetry.cog_deg}°
+                    </strong>
+                  </div>
+                  <div>
+                    <span>SPEED</span>
+                    <strong className="mono">
+                      {activeShipTelemetry.speed_kmh} km/h
+                    </strong>
+                  </div>
+                  <div>
+                    <span>LOCAL ICE</span>
+                    <strong
+                      className={`mono ${
+                        activeShipTelemetry.sic >= 0.35
+                          ? "warn-text"
+                          : "cyan-text"
+                      }`}
+                    >
+                      {Math.round(activeShipTelemetry.sic * 100)}% SIC
+                    </strong>
+                  </div>
+                </div>
+              )}
+
+              {/* Interactive Route Progress Scrubber Bar */}
+              {routeData?.forecast_aware?.xy?.length > 1 && (
+                <div className="dss-ship-anim-scrubber">
+                  <div className="dss-ship-anim-scrub-labels">
+                    <span>Start</span>
+                    <span className="mono">
+                      Drag to Scrub Corridor Position
+                    </span>
+                    <span>Goal</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={routeData.forecast_aware.xy.length - 1}
+                    step={0.1}
+                    value={smoothShipStep}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setIsShipSailing(false);
+                      smoothShipRef.current = val;
+                      setSmoothShipStep(val);
+                      setShipStepIdx(Math.round(val));
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Primary Action Row: Play/Pause + Camera Follow Lock */}
+              <div className="dss-ship-anim-primary-row">
+                <button
+                  type="button"
+                  className={`dss-sail-toggle ${
+                    isShipSailing ? "sailing" : ""
+                  }`}
+                  onClick={() => {
+                    setShipStepIdx(null);
+                    setIsShipSailing((s) => !s);
+                  }}
+                >
+                  {isShipSailing ? "⏸ Pause Ship" : "▶ Animate Ship"}
+                </button>
+
+                <button
+                  type="button"
+                  className={`dss-sail-follow ${
+                    autoFollowShip ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    const next = !autoFollowShip;
+                    setAutoFollowShip(next);
+                    if (next) handleZoomToShip(false);
+                  }}
+                  title="Lock camera onto moving ship"
+                >
+                  {autoFollowShip ? "◎ Camera Lock: ON" : "◎ Follow Ship"}
+                </button>
+              </div>
+
+              {/* Speed Cadence Segmented Selector + Nudge Step Buttons */}
+              <div className="dss-ship-anim-speed-row">
+                <span className="mono dss-speed-label">SPEED</span>
+                <div className="dss-sail-speeds">
+                  {[0.5, 1, 2, 3, 4].map((sp) => (
+                    <button
+                      key={sp}
+                      type="button"
+                      className={shipSailSpeed === sp ? "active" : ""}
+                      onClick={() => {
+                        setShipSailSpeed(sp);
+                        if (!isShipSailing) setIsShipSailing(true);
+                      }}
+                      title={`Set ship sailing speed to ${sp}x`}
+                    >
+                      {sp}×
+                    </button>
+                  ))}
+                </div>
+                <div className="dss-sail-nudge">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const maxI =
+                        (routeData?.forecast_aware?.xy?.length || 2) - 1;
+                      const prev = Math.max(0, smoothShipRef.current - 2);
+                      setIsShipSailing(false);
+                      smoothShipRef.current = prev;
+                      setSmoothShipStep(prev);
+                      setShipStepIdx(Math.min(maxI, Math.round(prev)));
+                    }}
+                    title="Step ship backward along route"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const maxI =
+                        (routeData?.forecast_aware?.xy?.length || 2) - 1;
+                      const nxt = Math.min(maxI, smoothShipRef.current + 2);
+                      setIsShipSailing(false);
+                      smoothShipRef.current = nxt;
+                      setSmoothShipStep(nxt);
+                      setShipStepIdx(Math.round(nxt));
+                    }}
+                    title="Step ship forward along route"
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div className="dss-action-row">
               <button
                 type="button"
-                className="dss-btn-primary"
+                className="dss-btn-secondary"
                 onClick={handleAdvanceDay}
                 disabled={loadingRoute}
+                style={{ flex: 1 }}
               >
                 {loadingRoute ? "Replanning..." : "Step Voyage +1 Day"}
               </button>
-              {shipPos && (
-                <button
-                  type="button"
-                  className="dss-btn-secondary"
-                  onClick={handleResetVoyage}
-                >
-                  Reset
-                </button>
-              )}
+              <button
+                type="button"
+                className="dss-btn-secondary"
+                onClick={handleResetVoyage}
+              >
+                Reset
+              </button>
             </div>
           </section>
 
@@ -4483,6 +4866,8 @@ export default function App() {
                 } ${st <= 0 ? "hist" : "fut"}`}
                 onClick={() => {
                   setIsPlaying(false);
+                  setIsShipSailing(false);
+                  setShipStepIdx(null);
                   setTimelineStep(st);
                 }}
               >

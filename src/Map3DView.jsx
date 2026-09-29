@@ -781,6 +781,58 @@ const Map3DView = forwardRef(function Map3DView(
       st.camera.position.set(cx, cy, cz);
       st.camera.lookAt(st.curTarget);
 
+      if (st.shipGroup && st.activeShipTelemetry) {
+        const tel = st.activeShipTelemetry;
+        const [sx, sz] = mapToSceneXZ(tel.x_m, tel.y_m);
+        const [nx, nz] = mapToSceneXZ(tel.next_x_m, tel.next_y_m);
+        const bobY = Math.sin(phase * Math.PI * 4) * 0.08;
+        const shipPos3D = flatXZToSceneVec3(sx, sz, 1.45 + bobY, st.globeMode);
+        const nextPos3D = flatXZToSceneVec3(nx, nz, 1.45 + bobY, st.globeMode);
+        st.shipGroup.position.copy(shipPos3D);
+        if (shipPos3D.distanceTo(nextPos3D) > 0.005) {
+          st.shipGroup.lookAt(nextPos3D);
+        }
+        // Subtle realistic ocean roll & pitch
+        st.shipGroup.rotateZ(Math.sin(phase * Math.PI * 2) * 0.038);
+        st.shipGroup.rotateX(Math.cos(phase * Math.PI * 4) * 0.024);
+
+        if (st.shipRadarBar) {
+          st.shipRadarBar.rotation.y = phase * Math.PI * 8;
+        }
+        if (st.shipRadarCone) {
+          st.shipRadarCone.rotation.z = Math.sin(phase * Math.PI * 2) * 0.36;
+        }
+        if (st.shipWakeGroup) {
+          const wakePulse = 0.88 + Math.sin(phase * Math.PI * 6) * 0.14;
+          st.shipWakeGroup.scale.set(wakePulse, 1, 1 + (1 - wakePulse) * 0.5);
+        }
+        if (st.shipSonarRings?.length) {
+          const surfPos = flatXZToSceneVec3(sx, sz, 0.55, st.globeMode);
+          const upV = new THREE.Vector3(0, 1, 0);
+          const normV = st.globeMode
+            ? flatXZToSurfaceNormal(sx, sz, true)
+            : upV;
+          st.shipSonarRings.forEach((rm) => {
+            rm.position.copy(surfPos);
+            if (st.globeMode) {
+              rm.quaternion.setFromUnitVectors(upV, normV);
+            } else {
+              rm.rotation.set(0, 0, 0);
+            }
+          });
+        }
+        if (st.shipLabelEntry) {
+          st.shipLabelEntry.pos3D.copy(
+            flatXZToSceneVec3(sx, sz, 8.8, st.globeMode)
+          );
+          st.shipLabelEntry.sub = `${Math.abs(tel.lat).toFixed(
+            1
+          )}°S, ${Math.abs(tel.lon).toFixed(1)}°E · COG ${
+            tel.cog_deg
+          }° · ${tel.speed_kmh} km/h`;
+        }
+      }
+
       if (st.pulseGroup) {
         st.pulseGroup.children.forEach((child) => {
           if (child.userData?.kind === "sonar") {
@@ -805,6 +857,49 @@ const Map3DView = forwardRef(function Map3DView(
               child.position.copy(p0);
               child.lookAt(p1);
             }
+          } else if (child.userData?.kind === "windComet") {
+            const curvePts = child.userData.curvePts;
+            const tailLen = child.userData.tailLen || 5;
+            const totalPts = curvePts.length;
+            const prog =
+              ((phase * (child.userData.speedFactor || 1) +
+                (child.userData.offset || 0)) %
+                1) *
+              (totalPts - 1);
+            const posAttr = child.geometry.getAttribute("position");
+            if (posAttr) {
+              for (let k = 0; k < tailLen; k++) {
+                // Tight sampling spacing (0.38) so each wind particle is a short, crisp moving wind wisp
+                const sampleIdx = Math.max(
+                  0,
+                  Math.min(totalPts - 1, prog - (tailLen - 1 - k) * 0.38)
+                );
+                const i0 = Math.floor(sampleIdx);
+                const i1 = Math.min(totalPts - 1, i0 + 1);
+                const frac = sampleIdx - i0;
+                const a = curvePts[i0];
+                const b = curvePts[i1];
+                posAttr.setXYZ(
+                  k,
+                  a.x + (b.x - a.x) * frac,
+                  a.y + (b.y - a.y) * frac,
+                  a.z + (b.z - a.z) * frac
+                );
+              }
+              posAttr.needsUpdate = true;
+            }
+            if (child.userData.headMesh) {
+              const hi0 = Math.floor(prog);
+              const hi1 = Math.min(totalPts - 1, hi0 + 1);
+              const hFrac = prog - hi0;
+              const ha = curvePts[hi0];
+              const hb = curvePts[hi1];
+              child.userData.headMesh.position.set(
+                ha.x + (hb.x - ha.x) * hFrac,
+                ha.y + (hb.y - ha.y) * hFrac,
+                ha.z + (hb.z - ha.z) * hFrac
+              );
+            }
           }
         });
       }
@@ -820,6 +915,12 @@ const Map3DView = forwardRef(function Map3DView(
           const lbl = st.labels[i];
           const domNode = children[i];
           if (!domNode) continue;
+          if (lbl.id === "vessel-rv-polar" && lbl.sub) {
+            const subEl = domNode.querySelector(".dss-3d-lbl-sub");
+            if (subEl && subEl.textContent !== lbl.sub) {
+              subEl.textContent = lbl.sub;
+            }
+          }
           tempV.copy(lbl.pos3D);
           tempV.project(camera);
           if (tempV.z > 1.0 || tempV.z < -1.0) {
@@ -873,6 +974,7 @@ const Map3DView = forwardRef(function Map3DView(
     st.surfaceTypeSlice = surfaceTypeSlice;
     st.showH3Grid = showH3Grid;
     st.h3Resolution = h3Resolution;
+    st.activeShipTelemetry = activeShipTelemetry;
 
     const map = new Map();
     if (h3Cells?.length) {
@@ -893,6 +995,7 @@ const Map3DView = forwardRef(function Map3DView(
     showH3Grid,
     h3Cells,
     h3Resolution,
+    activeShipTelemetry,
   ]);
 
   // 2. Update 3D Globe / Terrain Vertex Geometry + Multi-Spectral Satellite / Hypsometric / Polar Risk Texture
@@ -1225,6 +1328,12 @@ const Map3DView = forwardRef(function Map3DView(
       const obj = st.pulseGroup.children[0];
       st.pulseGroup.remove(obj);
     }
+    st.shipGroup = null;
+    st.shipRadarBar = null;
+    st.shipRadarCone = null;
+    st.shipWakeGroup = null;
+    st.shipSonarRings = [];
+    st.shipLabelEntry = null;
 
     const newLabels = [];
     const upVec = new THREE.Vector3(0, 1, 0);
@@ -1877,9 +1986,67 @@ const Map3DView = forwardRef(function Map3DView(
           beamMesh.userData.inspect = shipInspect;
           shipGroup.add(beamMesh);
 
+          // Spinning X-Band Marine Radar Scanner Bar atop Mast
+          const radarBarGeo = new THREE.BoxGeometry(2.6, 0.24, 0.38);
+          const radarBarMat = new THREE.MeshBasicMaterial({
+            color: 0x22d3ee,
+          });
+          const radarBarMesh = new THREE.Mesh(radarBarGeo, radarBarMat);
+          radarBarMesh.position.set(0, 5.15, 0.45);
+          shipGroup.add(radarBarMesh);
+          st.shipRadarBar = radarBarMesh;
+
+          // Sweeping Forward Surface Radar Sector Cone ahead of Vessel Bow
+          const radarConeGeo = new THREE.CircleGeometry(
+            10.5,
+            24,
+            Math.PI * 0.34,
+            Math.PI * 0.32
+          );
+          radarConeGeo.rotateX(-Math.PI / 2);
+          const radarConeMat = new THREE.MeshBasicMaterial({
+            color: 0xa3e635,
+            transparent: true,
+            opacity: 0.22,
+            side: THREE.DoubleSide,
+          });
+          const radarConeMesh = new THREE.Mesh(radarConeGeo, radarConeMat);
+          radarConeMesh.position.set(0, -0.75, 4.2);
+          shipGroup.add(radarConeMesh);
+          st.shipRadarCone = radarConeMesh;
+
+          // Animated Kelvin V-Wave & Glowing Stern Foam Wake
+          const wakeGroup = new THREE.Group();
+          const wakeWingMat = new THREE.MeshBasicMaterial({
+            color: 0x22d3ee,
+            transparent: true,
+            opacity: 0.68,
+          });
+          const wakeGeo = new THREE.BoxGeometry(0.38, 0.18, 8.2);
+          const wakePort = new THREE.Mesh(wakeGeo, wakeWingMat);
+          wakePort.position.set(-2.9, -0.72, -6.5);
+          wakePort.rotation.y = 0.28;
+          const wakeStbd = new THREE.Mesh(wakeGeo, wakeWingMat);
+          wakeStbd.position.set(2.9, -0.72, -6.5);
+          wakeStbd.rotation.y = -0.28;
+
+          const sternTrailGeo = new THREE.BoxGeometry(1.6, 0.14, 9.5);
+          const sternTrailMat = new THREE.MeshBasicMaterial({
+            color: 0x10b981,
+            transparent: true,
+            opacity: 0.55,
+          });
+          const sternTrail = new THREE.Mesh(sternTrailGeo, sternTrailMat);
+          sternTrail.position.set(0, -0.76, -8.2);
+          wakeGroup.add(wakePort, wakeStbd, sternTrail);
+          shipGroup.add(wakeGroup);
+          st.shipWakeGroup = wakeGroup;
+
           st.dynamicGroup.add(shipGroup);
+          st.shipGroup = shipGroup;
 
           // 3 Large High-Contrast Neon Lime Sonar Target Rings around Ship
+          const shipRings = [];
           for (let rIdx = 0; rIdx < 3; rIdx++) {
             const ringGeo = new THREE.RingGeometry(2.4, 3.25, 36);
             ringGeo.rotateX(-Math.PI / 2);
@@ -1894,9 +2061,11 @@ const Map3DView = forwardRef(function Map3DView(
             orientToGlobeNormal(ringMesh, sx, sz);
             ringMesh.userData = { kind: "sonar", offset: rIdx * 0.33 };
             st.pulseGroup.add(ringMesh);
+            shipRings.push(ringMesh);
           }
+          st.shipSonarRings = shipRings;
 
-          newLabels.push({
+          const shipLblObj = {
             id: "vessel-rv-polar",
             text: "SHIP: RV POLAR EXPLORER",
             sub: `${Math.abs(activeShipTelemetry.lat).toFixed(1)}°S, ${Math.abs(
@@ -1907,124 +2076,108 @@ const Map3DView = forwardRef(function Map3DView(
             kind: "ship",
             pos3D: flatXZToSceneVec3(sx, sz, 8.8, globeMode),
             inspect: shipInspect,
-          });
+          };
+          st.shipLabelEntry = shipLblObj;
+          newLabels.push(shipLblObj);
         }
       }
     }
 
-    // F2. Weather & Ocean Figures on 3D Globe / Map (High Ocean Currents, Katabatic/Gale Winds, Swell Waves & Polar Low Zones)
+    // F2. Clean Animated Short Wind & Current Wisps + Callout Badges on 3D Globe / Map (No Long Static Purple Lines)
     if (showWeatherFigures && weatherOverlays) {
-      // 1. High Ocean Currents (Antarctic Coastal Current Westward & ACC Eastward Streamlines + Animated Flow Cones)
-      if (weatherOverlays.currentStreamlines?.length) {
-        weatherOverlays.currentStreamlines.forEach((cur, idx) => {
-          const isCoastal = cur.isCoastalCurrent;
-          const curColor = isCoastal ? 0x38bdf8 : 0x818cf8;
-          const res = addRouteRibbon3D(
-            cur.pts,
-            curColor,
-            0.22,
-            0.38,
-            cur.inspect
+      // 1. Short Moving Wind & Current Wisps (2 staggered short wisps per track, zero static guide lines)
+      if (weatherOverlays.flowTracks?.length) {
+        const tailLen = 5;
+        weatherOverlays.flowTracks.forEach((ft) => {
+          const raw3D = ft.pts.map(([xm, ym]) =>
+            mapToScene3D(xm, ym, ft.isCurrentTrack ? 0.42 : 0.68, globeMode)
           );
-          if (res && res.pts.length >= 3) {
-            const chevGeo = new THREE.ConeGeometry(0.46, 1.25, 4);
-            chevGeo.rotateX(Math.PI / 2);
-            const chevMat = new THREE.MeshBasicMaterial({
-              color: isCoastal ? 0x7dd3fc : 0xc7d2fe,
-            });
-            const chev = new THREE.Mesh(chevGeo, chevMat);
-            chev.userData = {
-              kind: "chevronStream",
-              points: res.pts,
-              offset: (idx * 0.19) % 1,
-            };
-            st.pulseGroup.add(chev);
+          if (raw3D.length < 3) return;
+          const curve = new THREE.CatmullRomCurve3(raw3D);
+          const curvePts = curve.getPoints(26);
 
-            // Label representative high-current jets on the globe
-            if (idx % 5 === 0) {
-              const midPt = cur.pts[Math.floor(cur.pts.length / 2)];
-              newLabels.push({
-                id: `wx-cur-lbl-${cur.id}`,
-                text: isCoastal
-                  ? `COASTAL CURRENT · ${(cur.speedMs * 100).toFixed(0)} cm/s W`
-                  : `HIGH CURRENT (ACC) · ${(cur.speedMs * 100).toFixed(0)} cm/s E`,
-                sub: isCoastal
-                  ? "Westward Shelf-Break Drift"
-                  : "Eastward Circumpolar Stream",
-                kind: "weather-current",
-                pos3D: mapToScene3D(midPt[0], midPt[1], 1.7, globeMode),
-                inspect: cur.inspect,
-              });
+          // Spawn 2 staggered short moving wind wisps along the invisible flow curve
+          for (const shift of [0, 0.5]) {
+            const positions = new Float32Array(tailLen * 3);
+            const colors = new Float32Array(tailLen * 3);
+            const tailColor = new THREE.Color(
+              ft.isCurrentTrack
+                ? 0x0284c7
+                : ft.isKatabaticOrCoastal
+                  ? 0x38bdf8
+                  : 0x7dd3fc
+            );
+            const headColor = new THREE.Color(
+              ft.isCurrentTrack ? 0xbae6fd : 0xf8fafc
+            );
+            const tmpColor = new THREE.Color();
+
+            for (let k = 0; k < tailLen; k++) {
+              const frac = k / (tailLen - 1);
+              tmpColor.copy(tailColor).lerp(headColor, frac * frac);
+              const intensity = 0.22 + 0.78 * Math.pow(frac, 1.6);
+              colors[k * 3] = tmpColor.r * intensity;
+              colors[k * 3 + 1] = tmpColor.g * intensity;
+              colors[k * 3 + 2] = tmpColor.b * intensity;
+
+              const pt = curvePts[Math.min(curvePts.length - 1, k)];
+              positions[k * 3] = pt.x;
+              positions[k * 3 + 1] = pt.y;
+              positions[k * 3 + 2] = pt.z;
             }
+
+            const cometGeo = new THREE.BufferGeometry();
+            cometGeo.setAttribute(
+              "position",
+              new THREE.BufferAttribute(positions, 3)
+            );
+            cometGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+            const cometMat = new THREE.LineBasicMaterial({
+              vertexColors: true,
+              transparent: true,
+              opacity: 0.94,
+            });
+            const cometLine = new THREE.Line(cometGeo, cometMat);
+
+            // Small glowing droplet at the leading tip of each short wind wisp
+            const tipGeo = new THREE.SphereGeometry(
+              ft.isCurrentTrack ? 0.16 : 0.2,
+              8,
+              8
+            );
+            const tipMat = new THREE.MeshBasicMaterial({
+              color: ft.isCurrentTrack ? 0x7dd3fc : 0xf0f9ff,
+            });
+            const tipMesh = new THREE.Mesh(tipGeo, tipMat);
+            st.pulseGroup.add(tipMesh);
+
+            cometLine.userData = {
+              kind: "windComet",
+              curvePts,
+              tailLen,
+              offset: (ft.phaseOffset + shift) % 1,
+              speedFactor: ft.speedFactor,
+              headMesh: tipMesh,
+            };
+            st.pulseGroup.add(cometLine);
           }
         });
       }
 
-      // 2. Strong 10m Wind Vectors (Katabatic Outflow & Polar Gales)
-      if (weatherOverlays.windArrows?.length) {
-        for (const w of weatherOverlays.windArrows) {
-          const wColor = w.isSevere ? 0xfb923c : 0xc084fc;
-          const lineRes = addLine3D(
-            [
-              [w.x0, w.y0],
-              [w.x1, w.y1],
-            ],
-            wColor,
-            0.68,
-            false
-          );
-          if (lineRes && lineRes.pts.length === 2) {
-            const p0 = lineRes.pts[0];
-            const p1 = lineRes.pts[1];
-            const headGeo = new THREE.ConeGeometry(0.48, 1.25, 4);
-            headGeo.rotateX(Math.PI / 2);
-            const headMat = new THREE.MeshBasicMaterial({ color: wColor });
-            const headMesh = new THREE.Mesh(headGeo, headMat);
-            headMesh.position.copy(p1);
-            headMesh.lookAt(
-              new THREE.Vector3().subVectors(p1, p0).add(p1)
-            );
-            headMesh.userData.inspect = w.inspect;
-            st.dynamicGroup.add(headMesh);
-          }
-        }
-      }
-
-      // 3. Open-Ocean High Wave Swell Chevrons
-      if (weatherOverlays.waveIndicators?.length) {
-        for (const wv of weatherOverlays.waveIndicators) {
-          const wvColor = wv.isRough ? 0xf43f5e : 0x38bdf8;
-          addLine3D(wv.crest1, wvColor, 0.42, false);
-          addLine3D(wv.crest2, wvColor, 0.42, false);
-        }
-      }
-
-      // 4. Severe Weather & Katabatic Gale Advisory Zones
-      if (weatherOverlays.weatherZones?.length) {
-        for (const wz of weatherOverlays.weatherZones) {
-          addLine3D(wz.ringXy, 0xf97316, 0.72, true);
-          const [wxX, wxZ] = mapToSceneXZ(wz.centerXm, wz.centerYm);
-          const wxBeaconGeo = new THREE.OctahedronGeometry(0.95, 0);
-          const wxBeaconMat = new THREE.MeshStandardMaterial({
-            color: 0xf97316,
-            emissive: 0xea580c,
-            emissiveIntensity: 0.75,
-          });
-          const wxBeacon = new THREE.Mesh(wxBeaconGeo, wxBeaconMat);
-          wxBeacon.position.copy(
-            flatXZToSceneVec3(wxX, wxZ, 1.6, globeMode)
-          );
-          orientToGlobeNormal(wxBeacon, wxX, wxZ);
-          wxBeacon.userData.inspect = wz.inspect;
-          st.dynamicGroup.add(wxBeacon);
-
+      // 2. Floating Speed & Compass Callout Pills on the Globe
+      if (weatherOverlays.windBadges?.length) {
+        for (const wb of weatherOverlays.windBadges) {
           newLabels.push({
-            id: `wx-zone-${wz.id}`,
-            text: `WX: ${wz.title.split("&")[0].trim().toUpperCase()}`,
-            sub: wz.inspect.metrics?.[0]?.value || "Marine Weather Advisory",
-            kind: "weather-zone",
-            pos3D: flatXZToSceneVec3(wxX, wxZ, 3.1, globeMode),
-            inspect: wz.inspect,
+            id: wb.id,
+            text: wb.isPrimaryCallout
+              ? `${wb.speedKmh} km/h ${wb.arrow} ${wb.compass}`
+              : `${wb.speedKmh} ${wb.arrow}`,
+            sub: wb.isPrimaryCallout
+              ? `${wb.name} · Current ${wb.currentCmS} cm/s`
+              : wb.name,
+            kind: wb.isPrimaryCallout ? "wind-callout" : "wind-pill",
+            pos3D: mapToScene3D(wb.xm, wb.ym, 1.9, globeMode),
+            inspect: wb.inspect,
           });
         }
       }
@@ -2186,7 +2339,7 @@ const Map3DView = forwardRef(function Map3DView(
     selectedH3Index,
     routeData,
     icebergs,
-    activeShipTelemetry,
+    Boolean(activeShipTelemetry),
     selectedDestination,
   ]);
 
