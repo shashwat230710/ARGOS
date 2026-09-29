@@ -85,14 +85,18 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Overlay toggles
+  const [showIceContours, setShowIceContours] = useState(true);
+  const [showIceVectors, setShowIceVectors] = useState(true);
   const [showIcebergs, setShowIcebergs] = useState(true);
   const [showRoutes, setShowRoutes] = useState(true);
   const [showStations, setShowStations] = useState(true);
+  const [showGraticule, setShowGraticule] = useState(true);
+  const [selectedTarget, setSelectedTarget] = useState(null);
 
   // Routing parameters
   const [leg, setLeg] = useState("ice_entry->bharati");
   const [forecastSource, setForecastSource] = useState("auto");
-  const [wRisk, setWRisk] = useState(0.35);
+  const [wRisk, setWRisk] = useState(0.45);
   const [wTime, setWTime] = useState(1.0);
   const [shipPos, setShipPos] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
@@ -106,10 +110,56 @@ export default function App() {
   const mapRef = useRef(null);
   const rasterLayerRef = useRef(null);
   const landLayerRef = useRef(null);
+  const graticuleSourceRef = useRef(new VectorSource());
+  const iceDynamicsSourceRef = useRef(new VectorSource());
   const routeSourceRef = useRef(new VectorSource());
   const icebergSourceRef = useRef(new VectorSource());
   const stationSourceRef = useRef(new VectorSource());
   const activeSliceRef = useRef(null);
+
+  // Helper: Zoom / Pan map camera to real-world Antarctic sector presets
+  function handleFocusMapSector(sector) {
+    if (!mapRef.current || !scenario) return;
+    const view = mapRef.current.getView();
+    if (sector === "full") {
+      view.fit(scenario.extent, { padding: [20, 20, 20, 20], duration: 350 });
+      return;
+    }
+    if (sector === "prydz") {
+      const [x1, y1] = proj4("EPSG:4326", "EPSG:3412", [56.0, -60.0]);
+      const [x2, y2] = proj4("EPSG:4326", "EPSG:3412", [84.0, -71.5]);
+      const ext = [
+        Math.min(x1, x2),
+        Math.min(y1, y2),
+        Math.max(x1, x2),
+        Math.max(y1, y2),
+      ];
+      view.fit(ext, { padding: [30, 30, 30, 30], duration: 350 });
+      return;
+    }
+    if (sector === "maitri") {
+      const [x1, y1] = proj4("EPSG:4326", "EPSG:3412", [2.0, -61.5]);
+      const [x2, y2] = proj4("EPSG:4326", "EPSG:3412", [46.0, -72.5]);
+      const ext = [
+        Math.min(x1, x2),
+        Math.min(y1, y2),
+        Math.max(x1, x2),
+        Math.max(y1, y2),
+      ];
+      view.fit(ext, { padding: [30, 30, 30, 30], duration: 350 });
+      return;
+    }
+    if (sector === "ship" && routeData?.forecast_aware?.xy?.length) {
+      const fcXy = routeData.forecast_aware.xy;
+      const leadDay = Math.max(0, timelineStep);
+      const idx = Math.min(
+        fcXy.length - 1,
+        Math.floor((leadDay / 7) * (fcXy.length - 1))
+      );
+      const [sx, sy] = fcXy[idx] || fcXy[0];
+      view.animate({ center: [sx, sy], zoom: 3.4, duration: 350 });
+    }
+  }
 
   // 1. Load initial scenario, ML status, validation, hindcast, icebergs
   useEffect(() => {
@@ -148,7 +198,7 @@ export default function App() {
     });
 
     const rasterLayer = new ImageLayer({
-      opacity: 0.92,
+      opacity: 0.94,
     });
     rasterLayerRef.current = rasterLayer;
 
@@ -161,12 +211,33 @@ export default function App() {
     });
     const landLayer = new VectorLayer({
       source: landSource,
-      style: new Style({
-        fill: new Fill({ color: "rgba(17, 24, 39, 0.9)" }),
-        stroke: new Stroke({ color: "rgba(100, 116, 139, 0.5)", width: 1 }),
-      }),
+      style: (feature) => {
+        const kind = feature.get("kind");
+        if (kind === "iceshelf") {
+          return new Style({
+            fill: new Fill({ color: "rgba(56, 189, 248, 0.16)" }),
+            stroke: new Stroke({
+              color: "rgba(125, 211, 252, 0.65)",
+              width: 1.4,
+              lineDash: [5, 3],
+            }),
+          });
+        }
+        return new Style({
+          fill: new Fill({ color: "rgba(17, 24, 39, 0.96)" }),
+          stroke: new Stroke({ color: "rgba(148, 163, 184, 0.65)", width: 1.4 }),
+        });
+      },
     });
     landLayerRef.current = landLayer;
+
+    const graticuleLayer = new VectorLayer({
+      source: graticuleSourceRef.current,
+    });
+
+    const iceDynamicsLayer = new VectorLayer({
+      source: iceDynamicsSourceRef.current,
+    });
 
     const icebergLayer = new VectorLayer({
       source: icebergSourceRef.current,
@@ -187,7 +258,15 @@ export default function App() {
 
     const map = new Map({
       target: mapContainerRef.current,
-      layers: [rasterLayer, landLayer, icebergLayer, routeLayer, stationLayer],
+      layers: [
+        rasterLayer,
+        landLayer,
+        graticuleLayer,
+        iceDynamicsLayer,
+        icebergLayer,
+        routeLayer,
+        stationLayer,
+      ],
       view: new View({
         projection: polarProj,
         center,
@@ -241,8 +320,158 @@ export default function App() {
       probeTextRef.current.textContent = `${latStr}, ${lonStr} · ${cellStr} · ${sicStr}`;
     });
 
+    // Click to inspect any interactive feature (station, iceberg, ship, avoidance waypoint)
+    map.on("singleclick", (evt) => {
+      let hit = null;
+      map.forEachFeatureAtPixel(
+        evt.pixel,
+        (feat) => {
+          const info = feat.get("inspect");
+          if (info && !hit) {
+            hit = info;
+          }
+        },
+        { hitTolerance: 8 }
+      );
+      setSelectedTarget(hit);
+    });
+
     mapRef.current = map;
   }, [scenario]);
+
+  // 2b. Render Real-World Polar Stereographic Graticule (Lat/Lon Grid) & Geographic Landmarks
+  useEffect(() => {
+    const src = graticuleSourceRef.current;
+    src.clear();
+    if (!scenario || !showGraticule) return;
+
+    // Latitude parallels: 55°S, 60°S, 65°S, 66.56°S (Antarctic Circle), 70°S, 75°S
+    const lats = [
+      { lat: -55, label: "55°S", special: false },
+      { lat: -60, label: "60°S ANTARCTIC TREATY", special: true },
+      { lat: -65, label: "65°S", special: false },
+      { lat: -66.56, label: "66°33′S ANTARCTIC CIRCLE", special: true },
+      { lat: -70, label: "70°S", special: false },
+    ];
+
+    for (const item of lats) {
+      const coords = [];
+      for (let lon = -15; lon <= 105; lon += 1.5) {
+        coords.push(proj4("EPSG:4326", "EPSG:3412", [lon, item.lat]));
+      }
+      const lineFeat = new Feature({
+        geometry: new LineString(coords),
+      });
+      lineFeat.setStyle(
+        new Style({
+          stroke: new Stroke({
+            color: item.special
+              ? "rgba(56, 189, 248, 0.28)"
+              : "rgba(148, 163, 184, 0.16)",
+            width: item.special ? 1.1 : 0.8,
+            lineDash: item.special ? [6, 4] : [2, 4],
+          }),
+        })
+      );
+      src.addFeature(lineFeat);
+
+      // Place latitude label near 28°E
+      const labelPt = proj4("EPSG:4326", "EPSG:3412", [28.0, item.lat]);
+      const lblFeat = new Feature({
+        geometry: new Point(labelPt),
+      });
+      lblFeat.setStyle(
+        new Style({
+          text: new TextStyle({
+            text: item.label,
+            font: "500 9px 'JetBrains Mono', monospace",
+            fill: new Fill({
+              color: item.special
+                ? "rgba(125, 211, 252, 0.72)"
+                : "rgba(148, 163, 184, 0.5)",
+            }),
+            stroke: new Stroke({ color: "rgba(7, 9, 14, 0.85)", width: 2.5 }),
+            offsetY: -6,
+          }),
+        })
+      );
+      src.addFeature(lblFeat);
+    }
+
+    // Longitude meridians: 0°, 20°E, 40°E, 60°E, 80°E, 100°E
+    const lons = [0, 20, 40, 60, 80, 100];
+    for (const lon of lons) {
+      const coords = [];
+      for (let lat = -54; lat >= -75; lat -= 1.0) {
+        coords.push(proj4("EPSG:4326", "EPSG:3412", [lon, lat]));
+      }
+      const mFeat = new Feature({
+        geometry: new LineString(coords),
+      });
+      mFeat.setStyle(
+        new Style({
+          stroke: new Stroke({
+            color: "rgba(148, 163, 184, 0.16)",
+            width: 0.8,
+            lineDash: [2, 4],
+          }),
+        })
+      );
+      src.addFeature(mFeat);
+
+      const topPt = proj4("EPSG:4326", "EPSG:3412", [lon, -56.5]);
+      const mLbl = new Feature({
+        geometry: new Point(topPt),
+      });
+      mLbl.setStyle(
+        new Style({
+          text: new TextStyle({
+            text: lon === 0 ? "0° PRIME" : `${lon}°E`,
+            font: "500 9px 'JetBrains Mono', monospace",
+            fill: new Fill({ color: "rgba(148, 163, 184, 0.55)" }),
+            stroke: new Stroke({ color: "rgba(7, 9, 14, 0.85)", width: 2.5 }),
+          }),
+        })
+      );
+      src.addFeature(mLbl);
+    }
+
+    // Real-World Geographic Landmarks (Seas, Bays, Ice Shelves, Antarctic Regions)
+    const landmarks = scenario.landmarks || [];
+    for (const lm of landmarks) {
+      const [xm, ym] =
+        lm.x_m != null && lm.y_m != null
+          ? [lm.x_m, lm.y_m]
+          : proj4("EPSG:4326", "EPSG:3412", [lm.lon, lm.lat]);
+      const feat = new Feature({
+        geometry: new Point([xm, ym]),
+      });
+      const isOceanOrSea = lm.kind === "ocean" || lm.kind === "sea";
+      const isShelf = lm.kind === "shelf";
+      feat.setStyle(
+        new Style({
+          text: new TextStyle({
+            text: lm.name,
+            font:
+              lm.kind === "ocean"
+                ? "600 11px 'Epilogue', sans-serif"
+                : isOceanOrSea
+                ? "600 9.5px 'JetBrains Mono', monospace"
+                : "600 9.5px 'Epilogue', sans-serif",
+            fill: new Fill({
+              color: isShelf
+                ? "rgba(125, 211, 252, 0.8)"
+                : isOceanOrSea
+                ? "rgba(148, 163, 184, 0.62)"
+                : "rgba(148, 163, 184, 0.58)",
+            }),
+            stroke: new Stroke({ color: "rgba(7, 9, 14, 0.88)", width: 3 }),
+          }),
+        })
+      );
+      src.addFeature(feat);
+    }
+  }, [scenario, showGraticule]);
 
   // 3. Load forecast, uncertainty, and ML feature inspection whenever `date` or `mlStatus.model.totalEpochs` changes
   useEffect(() => {
@@ -478,40 +707,243 @@ export default function App() {
     swipeSplit,
   ]);
 
-  // 7. Update stations vector layer
+  // 6b. Update Predicted Sea-Ice Contours (15% Edge, 40% Heavy Pack) & Sea-Ice Drift Vectors Layer
+  useEffect(() => {
+    const src = iceDynamicsSourceRef.current;
+    src.clear();
+    if (!forecast?.ice_contours?.length) return;
+
+    const leadIdx = Math.max(0, Math.min(6, timelineStep <= 0 ? 4 : timelineStep - 1));
+    const contourObj = forecast.ice_contours[leadIdx] || forecast.ice_contours[4];
+    if (!contourObj) return;
+
+    if (showIceContours) {
+      // 1. Observed D0 15% Ice-Edge Reference Contour
+      if (contourObj.edge15_d0?.length > 2) {
+        const d0EdgeFeat = new Feature({
+          geometry: new LineString(contourObj.edge15_d0),
+        });
+        d0EdgeFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "rgba(226, 232, 240, 0.55)",
+              width: 1.4,
+              lineDash: [3, 4],
+            }),
+          })
+        );
+        src.addFeature(d0EdgeFeat);
+      }
+
+      // 2. U-Net Predicted 15% Navigable Ice-Edge Contour at Lead +kd
+      if (contourObj.edge15_pred?.length > 2) {
+        const predEdgeFeat = new Feature({
+          geometry: new LineString(contourObj.edge15_pred),
+        });
+        predEdgeFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "rgba(56, 189, 248, 0.92)",
+              width: 2.0,
+              lineDash: [8, 4],
+            }),
+          })
+        );
+        src.addFeature(predEdgeFeat);
+
+        const midIdx = Math.floor(contourObj.edge15_pred.length * 0.35);
+        if (contourObj.edge15_pred[midIdx]) {
+          const lblFeat = new Feature({
+            geometry: new Point(contourObj.edge15_pred[midIdx]),
+          });
+          lblFeat.setStyle(
+            new Style({
+              text: new TextStyle({
+                text: `PREDICTED 15% ICE EDGE (+${contourObj.lead_days}D)`,
+                font: "600 9.5px 'JetBrains Mono', monospace",
+                fill: new Fill({ color: "#7dd3fc" }),
+                stroke: new Stroke({ color: "#07090e", width: 3 }),
+                offsetY: -9,
+              }),
+            })
+          );
+          src.addFeature(lblFeat);
+        }
+      }
+
+      // 3. U-Net Predicted 40% Heavy Pack-Ice Hazard Boundary at Lead +kd
+      if (contourObj.heavy40_pred?.length > 2) {
+        const heavyFeat = new Feature({
+          geometry: new LineString(contourObj.heavy40_pred),
+        });
+        heavyFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "rgba(244, 63, 94, 0.88)",
+              width: 2.2,
+              lineDash: [6, 3],
+            }),
+          })
+        );
+        src.addFeature(heavyFeat);
+
+        const hIdx = Math.floor(contourObj.heavy40_pred.length * 0.62);
+        if (contourObj.heavy40_pred[hIdx]) {
+          const hLbl = new Feature({
+            geometry: new Point(contourObj.heavy40_pred[hIdx]),
+          });
+          hLbl.setStyle(
+            new Style({
+              text: new TextStyle({
+                text: `PREDICTED ≥40% HEAVY PACK BOUNDARY (+${contourObj.lead_days}D)`,
+                font: "600 9.5px 'JetBrains Mono', monospace",
+                fill: new Fill({ color: "#fda4af" }),
+                stroke: new Stroke({ color: "#07090e", width: 3 }),
+                offsetY: 11,
+              }),
+            })
+          );
+          src.addFeature(hLbl);
+        }
+      }
+    }
+
+    // 4. Predicted Sea-Ice Drift Velocity Vectors (Arrows across Marginal & Pack Ice Zone)
+    if (showIceVectors && contourObj.vectors?.length) {
+      for (const vec of contourObj.vectors) {
+        const dx = vec.x1 - vec.x0;
+        const dy = vec.y1 - vec.y0;
+        const len = Math.hypot(dx, dy);
+        if (len < 5000) continue;
+
+        const ux = dx / len;
+        const uy = dy / len;
+        const headLen = Math.min(22000, len * 0.32);
+        const wingX1 = vec.x1 - ux * headLen - uy * (headLen * 0.48);
+        const wingY1 = vec.y1 - uy * headLen + ux * (headLen * 0.48);
+        const wingX2 = vec.x1 - ux * headLen + uy * (headLen * 0.48);
+        const wingY2 = vec.y1 - uy * headLen - ux * (headLen * 0.48);
+
+        const shaftFeat = new Feature({
+          geometry: new LineString([
+            [vec.x0, vec.y0],
+            [vec.x1, vec.y1],
+          ]),
+        });
+        const headFeat = new Feature({
+          geometry: new LineString([
+            [wingX1, wingY1],
+            [vec.x1, vec.y1],
+            [wingX2, wingY2],
+          ]),
+        });
+
+        const isExpanding = vec.deltaSic > 0.03;
+        const vecColor = isExpanding
+          ? "rgba(251, 191, 36, 0.72)"
+          : "rgba(125, 211, 252, 0.68)";
+
+        const vStyle = new Style({
+          stroke: new Stroke({
+            color: vecColor,
+            width: 1.35,
+          }),
+        });
+        shaftFeat.setStyle(vStyle);
+        headFeat.setStyle(vStyle);
+        src.addFeature(shaftFeat);
+        src.addFeature(headFeat);
+      }
+    }
+  }, [forecast, timelineStep, showIceContours, showIceVectors]);
+
+  // 7. Update Real-World Antarctic Research Stations & Waypoint Gates Layer
   useEffect(() => {
     const src = stationSourceRef.current;
     src.clear();
     if (!scenario || !showStations) return;
 
-    const labels = {
-      ice_entry: "ICE ENTRY (55°S)",
-      bharati: "BHARATI STATION",
-      maitri: "MAITRI STATION",
-    };
+    const stationConfigs = [
+      {
+        key: "ice_entry",
+        title: "56°S PACK-ICE ENTRY GATE",
+        sub: "56.00°S, 52.50°E · Indian Sector Gate",
+        primary: true,
+        color: "#06b6d4",
+      },
+      {
+        key: "bharati",
+        title: "BHARATI STATION (INDIA · NCPOR)",
+        sub: "69.41°S, 76.19°E · Larsemann Hills, Prydz Bay",
+        primary: true,
+        color: "#f43f5e",
+      },
+      {
+        key: "maitri",
+        title: "MAITRI STATION (INDIA · NCPOR)",
+        sub: "70.77°S, 11.73°E · Schirmacher Oasis",
+        primary: true,
+        color: "#f43f5e",
+      },
+      {
+        key: "davis",
+        title: "DAVIS (AUS · AAD)",
+        sub: "68.58°S, 77.97°E · Vestfold Hills",
+        primary: false,
+        color: "#10b981",
+      },
+      {
+        key: "mawson",
+        title: "MAWSON (AUS · AAD)",
+        sub: "67.60°S, 62.87°E · Holme Bay",
+        primary: false,
+        color: "#10b981",
+      },
+      {
+        key: "syowa",
+        title: "SYOWA (JPN · NIPR)",
+        sub: "69.00°S, 39.58°E · Lützow-Holm Bay",
+        primary: false,
+        color: "#10b981",
+      },
+    ];
 
-    for (const [key, label] of Object.entries(labels)) {
-      const st = scenario.stations?.[key];
-      if (!st) continue;
+    for (const cfg of stationConfigs) {
+      const st = scenario.stations?.[cfg.key];
+      if (!st || !st.in_grid) continue;
       const feat = new Feature({
         geometry: new Point([st.x_m, st.y_m]),
-        name: label,
+        name: cfg.title,
+        inspect: {
+          kind: "Antarctic Research Station / Gate",
+          title: st.name || cfg.title,
+          subtitle: `${st.country} · ${Math.abs(st.lat).toFixed(2)}°S, ${Math.abs(
+            st.lon
+          ).toFixed(2)}°E`,
+          metrics: [
+            { label: "Operational Role", value: st.role },
+            { label: "Grid Cell (Row, Col)", value: `(${st.row}, ${st.col})` },
+            { label: "Projection", value: "EPSG:3412 South Polar" },
+          ],
+        },
       });
       feat.setStyle(
         new Style({
           image: new CircleStyle({
-            radius: key === "ice_entry" ? 4.5 : 6,
-            fill: new Fill({
-              color: key === "ice_entry" ? "#06b6d4" : "#f43f5e",
-            }),
-            stroke: new Stroke({ color: "#f8fafc", width: 1.75 }),
+            radius: cfg.primary ? 6 : 4.5,
+            fill: new Fill({ color: cfg.color }),
+            stroke: new Stroke({ color: "#f8fafc", width: cfg.primary ? 2 : 1.5 }),
           }),
           text: new TextStyle({
-            text: label,
-            offsetY: -13,
-            font: "600 10px 'JetBrains Mono', monospace",
-            fill: new Fill({ color: "#f8fafc" }),
-            stroke: new Stroke({ color: "#07090e", width: 3 }),
+            text: cfg.primary ? `${cfg.title}\n${cfg.sub}` : cfg.title,
+            offsetY: cfg.primary ? -18 : -12,
+            font: cfg.primary
+              ? "600 10px 'JetBrains Mono', monospace"
+              : "500 9.5px 'JetBrains Mono', monospace",
+            fill: new Fill({
+              color: cfg.primary ? "#f8fafc" : "#cbd5e1",
+            }),
+            stroke: new Stroke({ color: "#07090e", width: 3.2 }),
           }),
         })
       );
@@ -519,74 +951,403 @@ export default function App() {
     }
   }, [scenario, showStations]);
 
-  // 8. Update routes & ship marker vector layer
+  // 8. Update Calculated Ship Avoidance Path, Naive Climatology Hazard Path & Oriented Ship Marker
   useEffect(() => {
     const src = routeSourceRef.current;
     src.clear();
     if (!routeData || !showRoutes) return;
 
+    // A. Naive Static Climatology Route (Planned without synoptic U-Net forecast)
     const stXy = routeData.static?.xy;
+    const stMetrics = routeData.static?.metrics;
     if (stXy && stXy.length > 1) {
       const stFeat = new Feature({
         geometry: new LineString(stXy),
+        inspect: {
+          kind: "Naive Baseline Corridor",
+          title: "Static Historical Climatology Route",
+          subtitle: `Ignores synoptic pack-ice ridge & tabular iceberg drift`,
+          metrics: [
+            {
+              label: "Heavy-Ice Exposure (≥40% SIC)",
+              value: `${stMetrics?.heavy_ice_hours ?? "—"} hours`,
+            },
+            {
+              label: "Total Transit Duration",
+              value: `${stMetrics?.hours ?? "—"} hours`,
+            },
+            {
+              label: "Peak Observed SIC Encountered",
+              value: stMetrics?.max_sic
+                ? `${Math.round(stMetrics.max_sic * 100)}% SIC`
+                : "—",
+            },
+          ],
+        },
       });
       stFeat.setStyle(
         new Style({
           stroke: new Stroke({
-            color: "rgba(148, 163, 184, 0.8)",
+            color: "rgba(148, 163, 184, 0.82)",
             width: 2.25,
-            lineDash: [6, 5],
+            lineDash: [7, 5],
           }),
         })
       );
       src.addFeature(stFeat);
+
+      // Highlight High-Risk Heavy Pack-Ice Segments (≥40% SIC) along the Naive Climatology Route
+      const highRiskPts = stMetrics?.high_risk || [];
+      if (highRiskPts.length > 0) {
+        const riskCoords = highRiskPts.map((pt) => [pt.x_m, pt.y_m]);
+        if (riskCoords.length > 1) {
+          const hazardLine = new Feature({
+            geometry: new LineString(riskCoords),
+          });
+          hazardLine.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: "rgba(244, 63, 94, 0.95)",
+                width: 4.0,
+              }),
+            })
+          );
+          src.addFeature(hazardLine);
+        }
+
+        // Place a clear hazard callout marker in the middle of the pack-ice trap
+        const worstPt = highRiskPts.reduce(
+          (best, cur) => (cur.sic > best.sic ? cur : best),
+          highRiskPts[0]
+        );
+        const trapFeat = new Feature({
+          geometry: new Point([worstPt.x_m, worstPt.y_m]),
+          inspect: {
+            kind: "Pack-Ice Hazard Zone (Naive Route)",
+            title: `Climatology Route Encounters ${Math.round(
+              worstPt.sic * 100
+            )}% Pack Ice`,
+            subtitle: `${Math.abs(worstPt.lat).toFixed(2)}°S, ${Math.abs(
+              worstPt.lon
+            ).toFixed(2)}°E · T+${worstPt.hour}h`,
+            metrics: [
+              {
+                label: "Local Observed SIC",
+                value: `${Math.round(worstPt.sic * 100)}% (Heavy Pack Ridge)`,
+              },
+              {
+                label: "Heavy-Ice Penalty",
+                value: `${stMetrics.heavy_ice_hours} h in ≥40% SIC`,
+              },
+              {
+                label: "ARGOS Action",
+                value: "Calculated U-Net route detours clear of this ridge",
+              },
+            ],
+          },
+        });
+        trapFeat.setStyle(
+          new Style({
+            image: new CircleStyle({
+              radius: 5.5,
+              fill: new Fill({ color: "#f43f5e" }),
+              stroke: new Stroke({ color: "#fff1f2", width: 1.75 }),
+            }),
+            text: new TextStyle({
+              text: `CLIMATOLOGY TRAP · ${Math.round(worstPt.sic * 100)}% PACK ICE`,
+              offsetY: -13,
+              font: "600 9.5px 'JetBrains Mono', monospace",
+              fill: new Fill({ color: "#fda4af" }),
+              stroke: new Stroke({ color: "#07090e", width: 3.2 }),
+            }),
+          })
+        );
+        src.addFeature(trapFeat);
+      }
     }
 
+    // B. Calculated Forecast-Aware Ship Avoidance Path (U-Net + A*)
     const fcXy = routeData.forecast_aware?.xy;
+    const fcMetrics = routeData.forecast_aware?.metrics;
+    const fcTelemetry = fcMetrics?.telemetry || [];
     if (fcXy && fcXy.length > 1) {
+      // Outer dark casing + glowing laser-cyan core corridor
+      const fcCaseFeat = new Feature({
+        geometry: new LineString(fcXy),
+      });
+      fcCaseFeat.setStyle(
+        new Style({
+          stroke: new Stroke({
+            color: "rgba(8, 51, 68, 0.9)",
+            width: 6.5,
+          }),
+        })
+      );
+      src.addFeature(fcCaseFeat);
+
       const fcFeat = new Feature({
         geometry: new LineString(fcXy),
+        inspect: {
+          kind: "Calculated Ship Avoidance Path",
+          title: "U-Net Forecast-Aware A* Corridor",
+          subtitle: `Time-dependent 8-neighbor optimal avoidance path (λ = ${wRisk.toFixed(
+            2
+          )})`,
+          metrics: [
+            {
+              label: "Heavy-Ice Exposure (≥40% SIC)",
+              value: `${fcMetrics?.heavy_ice_hours ?? 0} hours`,
+            },
+            {
+              label: "Total Transit Duration",
+              value: `${fcMetrics?.hours ?? "—"} hours`,
+            },
+            {
+              label: "Track Distance",
+              value: `${fcMetrics?.distance_km ?? "—"} km`,
+            },
+          ],
+        },
       });
       fcFeat.setStyle(
         new Style({
           stroke: new Stroke({
             color: "#06b6d4",
-            width: 3.25,
+            width: 3.4,
           }),
         })
       );
       src.addFeature(fcFeat);
 
+      // Draw directional course chevrons along the calculated avoidance path
+      const stepStride = Math.max(4, Math.floor(fcXy.length / 8));
+      for (let i = stepStride; i < fcXy.length - 3; i += stepStride) {
+        const [x0, y0] = fcXy[i - 1];
+        const [x1, y1] = fcXy[i];
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen < 1000) continue;
+        const ux = dx / segLen;
+        const uy = dy / segLen;
+        const arm = 24000;
+        const wx1 = x1 - ux * arm - uy * (arm * 0.58);
+        const wy1 = y1 - uy * arm + ux * (arm * 0.58);
+        const wx2 = x1 - ux * arm + uy * (arm * 0.58);
+        const wy2 = y1 - uy * arm - ux * (arm * 0.58);
+
+        const chevFeat = new Feature({
+          geometry: new LineString([
+            [wx1, wy1],
+            [x1, y1],
+            [wx2, wy2],
+          ]),
+        });
+        chevFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "#67e8f9",
+              width: 2.2,
+            }),
+          })
+        );
+        src.addFeature(chevFeat);
+      }
+
+      // Plot Annotated Avoidance Waypoints (WP-1, WP-2, WP-3) along the calculated route
+      const waypoints = fcMetrics?.waypoints || [];
+      for (const wp of waypoints) {
+        if (wp.code === "WP-0" || wp.code === "WP-4") continue;
+        const wpFeat = new Feature({
+          geometry: new Point([wp.x_m, wp.y_m]),
+          inspect: {
+            kind: "Calculated Avoidance Waypoint",
+            title: wp.label,
+            subtitle: `${Math.abs(wp.lat).toFixed(2)}°S, ${Math.abs(
+              wp.lon
+            ).toFixed(2)}°E · ETA T+${wp.hour}h (Day +${wp.day}d)`,
+            metrics: [
+              { label: "Course Over Ground (COG)", value: `${wp.cog_deg}° True` },
+              { label: "Vessel Speed", value: `${wp.speed_kmh} km/h` },
+              {
+                label: "Local Sea-Ice Concentration",
+                value: `${(wp.sic * 100).toFixed(1)}% SIC`,
+              },
+            ],
+          },
+        });
+        wpFeat.setStyle(
+          new Style({
+            image: new CircleStyle({
+              radius: 4.2,
+              fill: new Fill({ color: "#083344" }),
+              stroke: new Stroke({ color: "#22d3ee", width: 2 }),
+            }),
+            text: new TextStyle({
+              text: `${wp.label}\nT+${Math.round(wp.hour)}h · ${Math.round(
+                wp.sic * 100
+              )}% SIC`,
+              offsetY: 16,
+              font: "600 9px 'JetBrains Mono', monospace",
+              fill: new Fill({ color: "#a5f3fc" }),
+              stroke: new Stroke({ color: "#07090e", width: 3 }),
+            }),
+          })
+        );
+        src.addFeature(wpFeat);
+      }
+
+      // C. Oriented Vessel Hull Marker + Radar Range Ring + Heading Vector (RV POLAR EXPLORER)
       const leadDay = Math.max(0, timelineStep);
       const idx = Math.min(
         fcXy.length - 1,
         Math.floor((leadDay / 7) * (fcXy.length - 1))
       );
       const shipCoord = fcXy[idx] || fcXy[0];
-      const shipFeat = new Feature({
-        geometry: new Point(shipCoord),
+      const nextCoord = fcXy[Math.min(fcXy.length - 1, idx + 1)] || shipCoord;
+      const prevCoord = fcXy[Math.max(0, idx - 1)] || shipCoord;
+      const tel = fcTelemetry[idx] || {
+        lon: 52.5,
+        lat: -56.0,
+        hour: 0,
+        sic: 0,
+        speed_kmh: 22.0,
+        cog_deg: 145,
+      };
+
+      const dxShip = nextCoord[0] - prevCoord[0];
+      const dyShip = nextCoord[1] - prevCoord[1];
+      const lenShip = Math.hypot(dxShip, dyShip) || 1;
+      const ux = dxShip / lenShip;
+      const uy = dyShip / lenShip;
+      const px = -uy;
+      const py = ux;
+
+      // 1. Ship Radar / Safety Surveillance Ring (45 km radius)
+      const radarRing = [];
+      const radarR = 45000;
+      for (let a = 0; a <= 32; a++) {
+        const ang = (a / 32) * 2 * Math.PI;
+        radarRing.push([
+          shipCoord[0] + radarR * Math.cos(ang),
+          shipCoord[1] + radarR * Math.sin(ang),
+        ]);
+      }
+      const radarFeat = new Feature({
+        geometry: new Polygon([radarRing]),
       });
-      shipFeat.setStyle(
+      radarFeat.setStyle(
         new Style({
-          image: new CircleStyle({
-            radius: 6,
-            fill: new Fill({ color: "#f59e0b" }),
-            stroke: new Stroke({ color: "#07090e", width: 2 }),
-          }),
-          text: new TextStyle({
-            text: "RV POLAR EXPLORER",
-            offsetY: 15,
-            font: "600 10px 'JetBrains Mono', monospace",
-            fill: new Fill({ color: "#fbbf24" }),
-            stroke: new Stroke({ color: "#07090e", width: 3 }),
+          fill: new Fill({ color: "rgba(6, 182, 212, 0.08)" }),
+          stroke: new Stroke({
+            color: "rgba(34, 211, 238, 0.55)",
+            width: 1.2,
+            lineDash: [4, 4],
           }),
         })
       );
-      src.addFeature(shipFeat);
-    }
-  }, [routeData, showRoutes, timelineStep]);
+      src.addFeature(radarFeat);
 
-  // 9. Update icebergs & uncertainty cones vector layer
+      // 2. Ship Velocity / Heading Leader Line
+      const leaderFeat = new Feature({
+        geometry: new LineString([
+          shipCoord,
+          [shipCoord[0] + ux * 85000, shipCoord[1] + uy * 85000],
+        ]),
+      });
+      leaderFeat.setStyle(
+        new Style({
+          stroke: new Stroke({
+            color: "#fbbf24",
+            width: 2.0,
+            lineDash: [4, 3],
+          }),
+        })
+      );
+      src.addFeature(leaderFeat);
+
+      // 3. Oriented Icebreaker Ship Hull Polygon (Bow pointed along course heading)
+      const hullLen = 42000;
+      const hullBeam = 17000;
+      const bow = [
+        shipCoord[0] + ux * hullLen,
+        shipCoord[1] + uy * hullLen,
+      ];
+      const stbdMid = [
+        shipCoord[0] + ux * (hullLen * 0.15) + px * hullBeam,
+        shipCoord[1] + uy * (hullLen * 0.15) + py * hullBeam,
+      ];
+      const stbdStern = [
+        shipCoord[0] - ux * (hullLen * 0.75) + px * (hullBeam * 0.85),
+        shipCoord[1] - uy * (hullLen * 0.75) + py * (hullBeam * 0.85),
+      ];
+      const portStern = [
+        shipCoord[0] - ux * (hullLen * 0.75) - px * (hullBeam * 0.85),
+        shipCoord[1] - uy * (hullLen * 0.75) - py * (hullBeam * 0.85),
+      ];
+      const portMid = [
+        shipCoord[0] + ux * (hullLen * 0.15) - px * hullBeam,
+        shipCoord[1] + uy * (hullLen * 0.15) - py * hullBeam,
+      ];
+
+      const hullFeat = new Feature({
+        geometry: new Polygon([[bow, stbdMid, stbdStern, portStern, portMid, bow]]),
+        inspect: {
+          kind: "PC6 Ice-Strengthened Research Vessel",
+          title: scenario?.ship?.name || "RV Polar Explorer",
+          subtitle: `${Math.abs(tel.lat).toFixed(2)}°S, ${Math.abs(
+            tel.lon
+          ).toFixed(2)}°E · Voyage T+${Math.round(tel.hour)}h`,
+          metrics: [
+            {
+              label: "Course & Speed",
+              value: `COG ${tel.cog_deg}° · ${tel.speed_kmh} km/h`,
+            },
+            {
+              label: "Local Sea-Ice Concentration",
+              value: `${(tel.sic * 100).toFixed(1)}% SIC (Limit 70%)`,
+            },
+            {
+              label: "Active Guidance",
+              value: "Following U-Net A* Avoidance Corridor",
+            },
+          ],
+        },
+      });
+      hullFeat.setStyle(
+        new Style({
+          fill: new Fill({ color: "#f59e0b" }),
+          stroke: new Stroke({ color: "#07090e", width: 2.2 }),
+        })
+      );
+      src.addFeature(hullFeat);
+
+      const shipLabelFeat = new Feature({
+        geometry: new Point(shipCoord),
+        inspect: hullFeat.get("inspect"),
+      });
+      shipLabelFeat.setStyle(
+        new Style({
+          image: new CircleStyle({
+            radius: 3,
+            fill: new Fill({ color: "#fef3c7" }),
+          }),
+          text: new TextStyle({
+            text: `RV POLAR EXPLORER\nCOG ${tel.cog_deg}° · ${tel.speed_kmh} km/h · ${Math.round(
+              tel.sic * 100
+            )}% SIC`,
+            offsetY: -22,
+            font: "600 10px 'JetBrains Mono', monospace",
+            fill: new Fill({ color: "#fde68a" }),
+            stroke: new Stroke({ color: "#07090e", width: 3.4 }),
+          }),
+        })
+      );
+      src.addFeature(shipLabelFeat);
+    }
+  }, [routeData, showRoutes, timelineStep, scenario, wRisk]);
+
+  // 9. Update Real-World Tabular Icebergs, Past Scatterometer Tracks, 7-Day Predicted Paths & Swept Cones
   useEffect(() => {
     const src = icebergSourceRef.current;
     src.clear();
@@ -594,12 +1355,66 @@ export default function App() {
 
     for (const berg of icebergs) {
       const track = berg.track || [];
+      const history = berg.history || [];
+
+      // 1. 5-Day Past Scatterometer Observed Track (D-5..D0)
+      if (history.length > 1) {
+        const histCoords = history.map((pt) => [pt.x_m, pt.y_m]);
+        const histFeat = new Feature({
+          geometry: new LineString(histCoords),
+        });
+        histFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "rgba(148, 163, 184, 0.65)",
+              width: 1.5,
+              lineDash: [2, 4],
+            }),
+          })
+        );
+        src.addFeature(histFeat);
+      }
+
+      // 2. 7-Day Swept Uncertainty Corridor Envelope Polygon + Forecast Track
       const coords = track.map((pt) => {
         if (pt.x_m != null && pt.y_m != null) return [pt.x_m, pt.y_m];
         return proj4("EPSG:4326", "EPSG:3412", [pt.lon, pt.lat]);
       });
 
       if (coords.length > 1) {
+        // Build swept cone corridor envelope from left/right normals along track
+        const leftEdge = [];
+        const rightEdge = [];
+        for (let i = 0; i < track.length; i++) {
+          const [cx, cy] = coords[i];
+          const [nx, ny] =
+            i < track.length - 1 ? coords[i + 1] : coords[i];
+          const [px, py] = i > 0 ? coords[i - 1] : coords[i];
+          const dx = nx - px;
+          const dy = ny - py;
+          const len = Math.hypot(dx, dy) || 1;
+          const normX = -dy / len;
+          const normY = dx / len;
+          const rM = (track[i].cone_km || 15) * 1000;
+          leftEdge.push([cx + normX * rM, cy + normY * rM]);
+          rightEdge.push([cx - normX * rM, cy - normY * rM]);
+        }
+        const corridorRing = [...leftEdge, ...rightEdge.reverse(), leftEdge[0]];
+        const corridorFeat = new Feature({
+          geometry: new Polygon([corridorRing]),
+        });
+        corridorFeat.setStyle(
+          new Style({
+            fill: new Fill({ color: "rgba(245, 158, 11, 0.09)" }),
+            stroke: new Stroke({
+              color: "rgba(245, 158, 11, 0.32)",
+              width: 1.0,
+              lineDash: [3, 3],
+            }),
+          })
+        );
+        src.addFeature(corridorFeat);
+
         const lineFeat = new Feature({
           geometry: new LineString(coords),
         });
@@ -607,27 +1422,25 @@ export default function App() {
           new Style({
             stroke: new Stroke({
               color: "#f59e0b",
-              width: 1.75,
-              lineDash: [4, 4],
+              width: 2.0,
+              lineDash: [5, 4],
             }),
           })
         );
         src.addFeature(lineFeat);
       }
 
+      // 3. +3d and +7d Uncertainty Cones & Daily Forecast Tick Markers
       for (const pt of track) {
         if (
           Math.abs(pt.lead_days - 3) < 0.01 ||
           Math.abs(pt.lead_days - 7) < 0.01
         ) {
-          const [cx, cy] =
-            pt.x_m != null
-              ? [pt.x_m, pt.y_m]
-              : proj4("EPSG:4326", "EPSG:3412", [pt.lon, pt.lat]);
+          const [cx, cy] = [pt.x_m, pt.y_m];
           const rMeters = (pt.cone_km || 20) * 1000;
           const ring = [];
-          for (let a = 0; a <= 24; a++) {
-            const ang = (a / 24) * 2 * Math.PI;
+          for (let a = 0; a <= 28; a++) {
+            const ang = (a / 28) * 2 * Math.PI;
             ring.push([
               cx + rMeters * Math.cos(ang),
               cy + rMeters * Math.sin(ang),
@@ -638,43 +1451,126 @@ export default function App() {
           });
           coneFeat.setStyle(
             new Style({
-              fill: new Fill({ color: "rgba(245, 158, 11, 0.1)" }),
+              fill: new Fill({ color: "rgba(245, 158, 11, 0.12)" }),
               stroke: new Stroke({
-                color: "rgba(245, 158, 11, 0.45)",
-                width: 1,
+                color: "rgba(251, 191, 36, 0.55)",
+                width: 1.2,
               }),
             })
           );
           src.addFeature(coneFeat);
+
+          const tickLbl = new Feature({
+            geometry: new Point([cx, cy + rMeters]),
+          });
+          tickLbl.setStyle(
+            new Style({
+              text: new TextStyle({
+                text: `${berg.id} +${Math.round(pt.lead_days)}d (±${Math.round(
+                  pt.cone_km
+                )}km)`,
+                font: "500 8.5px 'JetBrains Mono', monospace",
+                fill: new Fill({ color: "rgba(253, 230, 138, 0.88)" }),
+                stroke: new Stroke({ color: "#07090e", width: 2.5 }),
+                offsetY: -5,
+              }),
+            })
+          );
+          src.addFeature(tickLbl);
         }
       }
 
-      const [bx, by] =
-        berg.x_m != null
-          ? [berg.x_m, berg.y_m]
-          : proj4("EPSG:4326", "EPSG:3412", [berg.lon, berg.lat]);
+      // 4. Active Tabular Iceberg Position at current `timelineStep` (moves along history or forecast track!)
+      let activePt = { x_m: berg.x_m, y_m: berg.y_m, lon: berg.lon, lat: berg.lat };
+      if (timelineStep < 0 && history.length) {
+        const targetLead = Math.max(-5, timelineStep);
+        const found = history.reduce((best, cur) =>
+          Math.abs(cur.lead_days - targetLead) <
+          Math.abs(best.lead_days - targetLead)
+            ? cur
+            : best
+        );
+        if (found) activePt = found;
+      } else if (timelineStep > 0 && track.length) {
+        const found = track.reduce((best, cur) =>
+          Math.abs(cur.lead_days - timelineStep) <
+          Math.abs(best.lead_days - timelineStep)
+            ? cur
+            : best
+        );
+        if (found) activePt = found;
+      }
+
+      const [bx, by] = [activePt.x_m, activePt.y_m];
+      // Render realistic Tabular Iceberg Polygon Footprint (scaled visible block on chart)
+      const halfL = ((berg.length_km || 26) * 900);
+      const halfW = ((berg.width_km || 15) * 900);
+      const rot = 0.45;
+      const cR = Math.cos(rot);
+      const sR = Math.sin(rot);
+      const corners = [
+        [-halfL, -halfW * 0.8],
+        [halfL * 0.9, -halfW],
+        [halfL, halfW * 0.7],
+        [-halfL * 0.85, halfW],
+        [-halfL, -halfW * 0.8],
+      ].map(([dx, dy]) => [
+        bx + dx * cR - dy * sR,
+        by + dx * sR + dy * cR,
+      ]);
+
+      const inspectPayload = {
+        kind: "USNIC / BYU Tracked Tabular Iceberg",
+        title: berg.name || `Tabular Berg ${berg.id}`,
+        subtitle: `${Math.abs(activePt.lat).toFixed(2)}°S, ${Math.abs(
+          activePt.lon
+        ).toFixed(2)}°E · Dimensions ${berg.size_nm || "15×9 NM"}`,
+        metrics: [
+          {
+            label: "Origin / Calving Sector",
+            value: berg.calved_from || "East Antarctic Ice Shelf",
+          },
+          {
+            label: "Predicted Drift Speed",
+            value: `${berg.drift_km_day || 11.4} km/day (Coriolis + Coastal Current)`,
+          },
+          {
+            label: "7-Day Uncertainty Radius",
+            value: `±${Math.round(12 + 11.5 * 7)} km hazard cone`,
+          },
+        ],
+      };
+
+      const polyFeat = new Feature({
+        geometry: new Polygon([corners]),
+        inspect: inspectPayload,
+      });
+      polyFeat.setStyle(
+        new Style({
+          fill: new Fill({ color: "rgba(224, 242, 254, 0.92)" }),
+          stroke: new Stroke({ color: "#f59e0b", width: 2.0 }),
+        })
+      );
+      src.addFeature(polyFeat);
+
       const bergFeat = new Feature({
         geometry: new Point([bx, by]),
+        inspect: inspectPayload,
       });
       bergFeat.setStyle(
         new Style({
-          image: new CircleStyle({
-            radius: 5,
-            fill: new Fill({ color: "#f59e0b" }),
-            stroke: new Stroke({ color: "#07090e", width: 1.5 }),
-          }),
           text: new TextStyle({
-            text: `${berg.id}`,
-            offsetY: -12,
-            font: "600 10px 'JetBrains Mono', monospace",
+            text: `BERG ${berg.id} (${berg.size_nm || "TABULAR"})`,
+            offsetY: -15,
+            font: "600 9.5px 'JetBrains Mono', monospace",
             fill: new Fill({ color: "#fcd34d" }),
-            stroke: new Stroke({ color: "#07090e", width: 3 }),
+            stroke: new Stroke({ color: "#07090e", width: 3.2 }),
           }),
         })
       );
       src.addFeature(bergFeat);
     }
-  }, [icebergs, showIcebergs]);
+  }, [icebergs, showIcebergs, timelineStep]);
 
   // Handler: Train / Fine-Tune the Small U-Net Model live
   async function handleTrainModel(epochs = 5, reset = false) {
@@ -1058,7 +1954,7 @@ export default function App() {
           {/* Split-Screen Swipe & Vector Overlays */}
           <section className="dss-panel">
             <div className="dss-panel-head">
-              <h2>03. Comparison &amp; Overlays</h2>
+              <h2>03. Chart Layers &amp; Ice Prediction</h2>
             </div>
 
             <label className="dss-check-row">
@@ -1089,11 +1985,31 @@ export default function App() {
             <label className="dss-check-row">
               <input
                 type="checkbox"
+                checked={showIceContours}
+                onChange={(e) => setShowIceContours(e.target.checked)}
+              />
+              <span>Predicted 15% &amp; 40% Ice Contours</span>
+              <span className="dss-radio-meta">U-Net</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showIceVectors}
+                onChange={(e) => setShowIceVectors(e.target.checked)}
+              />
+              <span>Predicted Sea-Ice Drift Vectors</span>
+              <span className="dss-radio-meta">7d Motion</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
                 checked={showRoutes}
                 onChange={(e) => setShowRoutes(e.target.checked)}
               />
-              <span>A* Planned Corridors</span>
-              <span className="dss-radio-meta">Live</span>
+              <span>Ship Avoidance &amp; Baseline Paths</span>
+              <span className="dss-radio-meta">Live A*</span>
             </label>
 
             <label className="dss-check-row">
@@ -1102,8 +2018,8 @@ export default function App() {
                 checked={showIcebergs}
                 onChange={(e) => setShowIcebergs(e.target.checked)}
               />
-              <span>Tabular Berg Drift &amp; Cones</span>
-              <span className="dss-radio-meta">Simulated</span>
+              <span>Tabular Bergs (D-28, B-22A, A-74)</span>
+              <span className="dss-radio-meta">7d Cones</span>
             </label>
 
             <label className="dss-check-row">
@@ -1112,15 +2028,25 @@ export default function App() {
                 checked={showStations}
                 onChange={(e) => setShowStations(e.target.checked)}
               />
-              <span>Antarctic Research Stations</span>
-              <span className="dss-radio-meta">Fixed</span>
+              <span>Antarctic Stations (6 Sites)</span>
+              <span className="dss-radio-meta">Real Coords</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showGraticule}
+                onChange={(e) => setShowGraticule(e.target.checked)}
+              />
+              <span>Polar Graticule &amp; Seas/Shelves</span>
+              <span className="dss-radio-meta">EPSG:3412</span>
             </label>
           </section>
 
           {/* Calibration Scale & Legend */}
           <section className="dss-panel dss-panel-last">
             <div className="dss-panel-head">
-              <h2>04. Sea-Ice Concentration Scale</h2>
+              <h2>04. Sea-Ice &amp; Navigation Legend</h2>
             </div>
             <div className="dss-colorbar-group">
               <div className="dss-colorbar-sic" />
@@ -1133,13 +2059,19 @@ export default function App() {
             </div>
             <div className="dss-legend-lines">
               <div>
-                <span className="line-swatch cyan" /> Forecast-aware A* route
+                <span className="line-swatch cyan" /> Calculated ship avoidance path (A*)
               </div>
               <div>
-                <span className="line-swatch dashed" /> Static climatology route
+                <span className="line-swatch dashed" /> Naive climatology path
               </div>
               <div>
-                <span className="line-swatch amber" /> 7-day berg trajectory + cone
+                <span className="line-swatch rose" /> Heavy pack-ice trap (≥40% SIC)
+              </div>
+              <div>
+                <span className="line-swatch sky-dashed" /> Predicted 15% ice-edge contour
+              </div>
+              <div>
+                <span className="line-swatch amber" /> Tabular berg 7-day path + cone
               </div>
             </div>
           </section>
@@ -1167,7 +2099,67 @@ export default function App() {
             </div>
           </div>
 
+          {/* Floating Real-World Sector Camera Presets Bar */}
+          <div className="dss-map-camera-bar" role="group" aria-label="Chart Sector Presets">
+            <button
+              type="button"
+              onClick={() => handleFocusMapSector("full")}
+              title="Reset view to full Indian Ocean & East Antarctica Sector (10°W–100°E)"
+            >
+              Full Sector
+            </button>
+            <button
+              type="button"
+              onClick={() => handleFocusMapSector("prydz")}
+              title="Focus on Cooperation Sea, Prydz Bay & Bharati Station Approach"
+            >
+              Prydz Bay &amp; Bharati
+            </button>
+            <button
+              type="button"
+              onClick={() => handleFocusMapSector("maitri")}
+              title="Focus on Cosmonaut Sea, Lazarev Sea & Maitri Station"
+            >
+              Maitri &amp; Maud Coast
+            </button>
+            <button
+              type="button"
+              onClick={() => handleFocusMapSector("ship")}
+              title="Center camera on RV Polar Explorer along calculated avoidance path"
+            >
+              Focus Ship
+            </button>
+          </div>
+
           <div ref={mapContainerRef} className="dss-map" />
+
+          {/* Interactive Click-to-Inspect Feature Telemetry Card */}
+          {selectedTarget && (
+            <div className="dss-map-inspect-card">
+              <div className="dss-inspect-head">
+                <div>
+                  <span className="dss-inspect-kind">{selectedTarget.kind}</span>
+                  <h3>{selectedTarget.title}</h3>
+                  <p>{selectedTarget.subtitle}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTarget(null)}
+                  aria-label="Close target inspector"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="dss-inspect-metrics">
+                {selectedTarget.metrics?.map((m, i) => (
+                  <div key={i} className="dss-inspect-row">
+                    <span>{m.label}</span>
+                    <strong className="mono">{m.value}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {scenario?.gate && (
             <div className="dss-map-hud-bottom">
@@ -1179,7 +2171,9 @@ export default function App() {
                 {scenario.gate.passed ? "VALIDATION GATE NOMINAL" : "FALLBACK"}
               </span>
               <span aria-hidden="true">·</span>
-              <span>{scenario.gate.note}</span>
+              <span>
+                Click any station, berg, waypoint, or ship on chart to inspect
+              </span>
             </div>
           )}
         </section>
@@ -1216,13 +2210,13 @@ export default function App() {
                 }}
               >
                 <option value="ice_entry->bharati">
-                  Ice Entry (55°S, 52.5°E) → Bharati Station
+                  Ice Entry (56°S, 52.5°E) → Bharati Station
                 </option>
                 <option value="bharati->maitri">
                   Bharati Station → Maitri Station
                 </option>
                 <option value="ice_entry->maitri">
-                  Ice Entry (55°S, 52.5°E) → Maitri Station
+                  Ice Entry (56°S, 52.5°E) → Maitri Station
                 </option>
               </select>
             </label>
@@ -1387,10 +2381,49 @@ export default function App() {
             )}
           </section>
 
+          {/* 03. Calculated Ship Avoidance Waypoints Log */}
+          {fcMetrics?.waypoints?.length > 0 && (
+            <section className="dss-panel">
+              <div className="dss-panel-head">
+                <h2>03. Ship Avoidance Waypoint Log</h2>
+              </div>
+              <p className="dss-meta-line">
+                <span>Calculated A* course bypassing bergs &amp; ≥40% pack</span>
+              </p>
+              <div className="dss-wp-list">
+                {fcMetrics.waypoints.map((wp) => (
+                  <div
+                    key={wp.code}
+                    className="dss-wp-row"
+                    onClick={() => {
+                      if (mapRef.current) {
+                        mapRef.current
+                          .getView()
+                          .animate({ center: [wp.x_m, wp.y_m], duration: 300 });
+                      }
+                    }}
+                  >
+                    <div className="dss-wp-main">
+                      <strong>{wp.label}</strong>
+                      <span className="mono">
+                        {Math.abs(wp.lat).toFixed(1)}°S, {Math.abs(wp.lon).toFixed(1)}°E · COG{" "}
+                        {wp.cog_deg}°
+                      </span>
+                    </div>
+                    <div className="dss-wp-right mono">
+                      <span>T+{Math.round(wp.hour)}h</span>
+                      <small>{Math.round(wp.sic * 100)}% SIC</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {scenario?.hindcast_summary && (
             <section className="dss-panel dss-panel-last">
               <div className="dss-panel-head">
-                <h2>03. Multi-Date Hindcast Benchmark</h2>
+                <h2>04. Multi-Date Hindcast Benchmark</h2>
                 <button
                   type="button"
                   className="dss-inline-help"

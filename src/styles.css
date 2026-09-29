@@ -415,10 +415,11 @@ td.neg {
   border-radius: 2px;
   background: linear-gradient(
     90deg,
-    #07090e 0%,
-    rgba(180, 210, 230, 0.35) 15%,
-    rgb(210, 230, 242) 50%,
-    rgb(255, 255, 255) 100%
+    #081324 0%,
+    #164e8a 15%,
+    #87c6ee 40%,
+    #f8f6ff 70%,
+    #ffc6c3 100%
   );
   border: 1px solid var(--border-hairline);
 }
@@ -455,6 +456,16 @@ td.neg {
 
 .line-swatch.dashed {
   border-top: 2px dashed #94a3b8;
+  height: 0;
+}
+
+.line-swatch.rose {
+  background: var(--accent-rose);
+  height: 3.5px;
+}
+
+.line-swatch.sky-dashed {
+  border-top: 2px dashed #38bdf8;
   height: 0;
 }
 
@@ -535,6 +546,182 @@ td.neg {
 
 .dss-map canvas {
   display: block;
+}
+
+/* Floating Camera Sector Presets Bar */
+.dss-map-camera-bar {
+  position: absolute;
+  top: 48px;
+  right: 12px;
+  z-index: 12;
+  display: flex;
+  gap: 4px;
+  background: rgba(11, 15, 23, 0.92);
+  border: 1px solid var(--border-hairline);
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.dss-map-camera-bar button {
+  background: var(--bg-obsidian);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  padding: 4px 9px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.dss-map-camera-bar button:hover {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+/* On-Map Target Telemetry Inspector Card */
+.dss-map-inspect-card {
+  position: absolute;
+  bottom: 48px;
+  right: 12px;
+  z-index: 15;
+  width: 310px;
+  background: rgba(11, 15, 23, 0.96);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 4px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dss-inspect-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 8px;
+}
+
+.dss-inspect-kind {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--accent-cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.dss-inspect-head h3 {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dss-inspect-head p {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.dss-inspect-head button {
+  background: transparent;
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.dss-inspect-head button:hover {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.dss-inspect-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+}
+
+.dss-inspect-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+.dss-inspect-row strong {
+  color: var(--text-primary);
+  text-align: right;
+}
+
+/* Ship Avoidance Waypoints Log in Right Sidebar */
+.dss-wp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dss-wp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-obsidian);
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+
+.dss-wp-row:hover {
+  border-color: var(--accent-cyan);
+}
+
+.dss-wp-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dss-wp-main strong {
+  font-size: 11.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dss-wp-main span {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.dss-wp-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-size: 10.5px;
+  color: var(--accent-cyan);
+  white-space: nowrap;
+}
+
+.dss-wp-right small {
+  font-size: 9.5px;
+  color: var(--text-muted);
 }
 
 .dss-map-hud-bottom {
