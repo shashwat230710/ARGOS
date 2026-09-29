@@ -618,11 +618,11 @@ export default function LandingPage({
                   value={leg}
                   onChange={(e) => setLeg(e.target.value)}
                 >
-                  <option value="ice_entry->bharati">
-                    56°S Pack-Ice Entry Gate (52.5°E) to Bharati Station
-                  </option>
                   <option value="bharati->maitri">
                     Bharati Station (Prydz Bay) to Maitri Station (Dronning Maud)
+                  </option>
+                  <option value="ice_entry->bharati">
+                    56°S Pack-Ice Entry Gate (52.5°E) to Bharati Station
                   </option>
                   <option value="ice_entry->maitri">
                     56°S Pack-Ice Entry Gate (52.5°E) to Maitri Station

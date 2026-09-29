@@ -277,7 +277,7 @@ export default function App() {
   // Collapsible Left & Right Side Panels + Interactive Landing Page state
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [showLanding, setShowLanding] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
 
   // 3D Globe / Map, Satellite/Terrain Basemap, Legend, Search & Destination State
   const [viewMode, setViewMode] = useState("3d"); // "3d" | "2d"
