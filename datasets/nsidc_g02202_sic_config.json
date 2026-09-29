@@ -1,0 +1,42 @@
+{
+  "dataset_name": "NOAA/NSIDC Climate Data Record of Passive Microwave Sea Ice Concentration, Version 6 (G02202)",
+  "dataset_doi": "https://doi.org/10.7265/b18j-z797",
+  "epsg_code": "EPSG:3412",
+  "proj4_def": "+proj=stere +lat_0=-90 +lat_ts=-70 +lon_0=0 +x_0=0 +y_0=0 +a=6378273 +b=6356889.449 +units=m +no_defs",
+  "demo_d0": "2023-01-10",
+  "start_date": "2022-12-01",
+  "total_days": 55,
+  "cell_m": 25000.0,
+  "cell_km": 25.0,
+  "crop_h": 160,
+  "crop_w": 184,
+  "t_in": 7,
+  "k_out": 7,
+  "ship": {
+    "name": "RV Polar Explorer",
+    "class": "PC6 Ice-Strengthened Research Vessel",
+    "open_water_kmh": 22.0,
+    "max_sic": 0.70,
+    "heavy_ice_sic": 0.40
+  },
+  "synoptic_features": {
+    "cooperation_sea_ridge": {
+      "lon_center": 65.2,
+      "lat_center": -64.8,
+      "amplitude_sic": 0.48,
+      "drift_deg_per_day": -0.14
+    },
+    "enderby_cosmonaut_ridge": {
+      "lon_center": 41.0,
+      "lat_center": -65.6,
+      "amplitude_sic": 0.44,
+      "drift_deg_per_day": -0.12
+    },
+    "prydz_bay_polynya_lead": {
+      "lon_center": 76.8,
+      "lat_center": -66.2,
+      "amplitude_sic": -0.42,
+      "drift_deg_per_day": -0.10
+    }
+  }
+}

@@ -75,6 +75,9 @@ export function errorColor(v) {
   ];
 }
 
+export const sicRgba = sicColor;
+export const errorRgba = errorColor;
+
 export function paintGrid(canvas, packed, mode = "sic", land = null) {
   const [h, w] = packed.shape;
   canvas.width = w;

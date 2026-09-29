@@ -1,0 +1,95 @@
+{
+  "datasets": [
+    {
+      "id": "nsidc-g02202-v6",
+      "role": "Primary Target & Input (Used in Demo)",
+      "name": "NOAA/NSIDC Climate Data Record of Passive Microwave Sea Ice Concentration, V6 (G02202)",
+      "agency": "NOAA / NSIDC",
+      "resolution": "25 km × 25 km · Daily · EPSG:3412",
+      "coverage": "1978–Present (Antarctic South Polar Grid, 332×316)",
+      "variables": ["cdr_seaice_conc", "stdev_of_cdr_seaice_conc", "qa_of_cdr_seaice_conc"],
+      "access": "Free, direct HTTPS (no registration required)",
+      "url": "https://noaadata.apps.nsidc.org/NOAA/G02202_V6/south/daily/",
+      "doi": "https://doi.org/10.7265/b18j-z797",
+      "whyBest": "Gold-standard climate record with zero gaps across clouds/polar night, small file size (~150 KB/day NetCDF), ideal for training compact 2-level U-Nets on CPU/laptop."
+    },
+    {
+      "id": "nasa-gibs-sentinel-modis",
+      "role": "3D Satellite Surface Texture & Optical/Thermal Polar Imagery",
+      "name": "NASA Earthdata GIBS (MODIS/VIIRS True Color & Blue Marble Next Generation) + Copernicus Sentinel-2",
+      "agency": "NASA EOSDIS / ESA Copernicus",
+      "resolution": "250 m – 1 km · Polar Stereographic (EPSG:3031 / EPSG:3412)",
+      "coverage": "Antarctic Continent, Ice Shelves & Southern Ocean",
+      "variables": ["CorrectedReflectance_TrueColor", "BlueMarble_ShadedRelief_Bathymetry"],
+      "access": "Free public WMS/WMTS endpoints (no API key required)",
+      "url": "https://gibs.earthdata.nasa.gov/wms/epsg3031/best/wms.cgi",
+      "doi": "https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs",
+      "whyBest": "Provides open-access, legally redistributable polar satellite imagery with zero commercial API keys, fused with BedMachine DEM and NSIDC sea-ice concentration."
+    },
+    {
+      "id": "amsr2-asi-bremen",
+      "role": "High-Resolution Operational Sea Ice (Coastal Leads)",
+      "name": "AMSR2 ASI (ARTIST Sea Ice) Passive Microwave 89 GHz Daily Grids",
+      "agency": "University of Bremen / JAXA",
+      "resolution": "6.25 km & 3.125 km · Daily · EPSG:3412",
+      "coverage": "2012–Present (Antarctic & Regional Sectors)",
+      "variables": ["z (Sea Ice Concentration 0–100%)"],
+      "access": "Free, open HTTPS archive (NetCDF & GeoTIFF)",
+      "url": "https://data.seaice.uni-bremen.de/amsr2/asi_daygrid_swath/s6250/",
+      "doi": "https://doi.org/10.1029/2005JC003384",
+      "whyBest": "4× finer spatial resolution than SSMIS/CDR; resolves narrow coastal polynyas and fast-ice channels on the approach to Bharati (Prydz Bay) and Maitri."
+    },
+    {
+      "id": "ecmwf-era5-single",
+      "role": "Atmospheric Forcing Covariates (Wind Drift & Melt)",
+      "name": "ECMWF ERA5 Reanalysis on Single Levels (10m Wind & 2m Temp)",
+      "agency": "Copernicus C3S / ECMWF / Google Cloud ARCO-ERA5",
+      "resolution": "0.25° (~25 km) · Hourly / Daily · NetCDF / Zarr",
+      "coverage": "1940–Present",
+      "variables": ["u10 (10m Eastward Wind)", "v10 (10m Northward Wind)", "t2m (2m Air Temp)", "msl (Sea Level Pressure)"],
+      "access": "Free via Copernicus CDS API or AWS/GCP Public Zarr (`gs://gcp-public-data-arco-era5`)",
+      "url": "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels",
+      "doi": "https://doi.org/10.24381/cds.adbb2d47",
+      "whyBest": "Adding `u10/v10` wind channels to the U-Net input tensor provides the strongest physical predictor for 3–7 day wind-driven sea-ice advection and polynya opening."
+    },
+    {
+      "id": "cmems-seaice-velocity",
+      "role": "Satellite Sea-Ice Drift Vectors & Ocean Currents",
+      "name": "OSI SAF / Copernicus Global Ocean & Sea Ice Drift (OSI-405-c / GLORYS12)",
+      "agency": "EUMETSAT OSI SAF & Copernicus Marine (CMEMS)",
+      "resolution": "62.5 km (Ice Drift) / 1/12° (Ocean Currents) · Daily",
+      "coverage": "2013–Present",
+      "variables": ["dX, dY (48h Ice Motion Vectors)", "uo, vo (Surface Geostrophic/Ekman Current)"],
+      "access": "Free via Copernicus Marine Toolbox (`copernicusmarine`) & OSI SAF FTP/HTTPS",
+      "url": "https://osi-saf.eumetsat.int/products/osi-405-c",
+      "doi": "https://doi.org/10.48670/moi-00016",
+      "whyBest": "Directly supplies observed ice motion vectors and Antarctic Coastal Current velocity for both U-Net advection channels and physical iceberg drift cones."
+    },
+    {
+      "id": "usnic-byu-icebergs",
+      "role": "Iceberg Positions & Scatterometer Trajectories",
+      "name": "US National Ice Center (USNIC) & BYU SCP Antarctic Iceberg Database",
+      "agency": "USNIC / Brigham Young University Microwave Earth Remote Sensing",
+      "resolution": "Tabular Bergs (≥10 NM) & Small Bergs (Sentinel-1 SAR via CMEMS)",
+      "coverage": "1978–Present (Weekly/Daily CSV & Shapefiles)",
+      "variables": ["Berg ID", "Latitude", "Longitude", "Length/Width NM", "Scatterometer Track"],
+      "access": "Free public CSV/Shapefile download",
+      "url": "https://www.scp.byu.edu/data/iceberg/",
+      "doi": "https://usicecenter.gov/Products/AntarcticIcebergs",
+      "whyBest": "Provides real historical and live positions of Southern Ocean tabular icebergs (A-, B-, C-, D-quadrants) to initialize the 7-day drift + uncertainty cone module."
+    },
+    {
+      "id": "bedmachine-ibcso",
+      "role": "3D Land, Mountain Elevation, Grounded Ice-Shelf & Bathymetry Mask",
+      "name": "MEaSUREs BedMachine Antarctica v3 (NSIDC-0756), REMA DEM & IBCSO v2",
+      "agency": "NASA MEaSUREs / NSIDC / AWI",
+      "resolution": "500 m regridded to 25 km EPSG:3412",
+      "coverage": "Antarctic Continent, Ice Shelves & Southern Ocean",
+      "variables": ["surface (Ice/Mountain Elevation m)", "bed (Bathymetry m)", "mask (0=Ocean, 1=Rock Oasis, 2=Grounded Ice, 3=Floating Ice Shelf)"],
+      "access": "Free via NSIDC & IBCSO",
+      "url": "https://nsidc.org/data/nsidc-0756/versions/3",
+      "doi": "https://doi.org/10.5067/FPSU0V1MWUB6",
+      "whyBest": "Supplies the 3D topographic elevation model (Prince Charles Mts, Wohlthat Mts, Framnes Mts, East Antarctic Ice Dome), floating ice shelves (Amery, Lazarev, West), and Southern Ocean bathymetry."
+    }
+  ]
+}

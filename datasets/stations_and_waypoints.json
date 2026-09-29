@@ -1,0 +1,147 @@
+{
+  "metadata": {
+    "dataset_name": "Antarctic Research Stations, Staging Ports, Waypoint Gates & Overland Traverses",
+    "source": "COMNAP (Council of Managers of National Antarctic Programs) & SCAR Composite Gazetteer of Antarctica",
+    "url": "https://www.comnap.aq/antarctic-facilities-information/",
+    "license": "CC-BY 4.0 / Public Scientific Reference",
+    "crs": "EPSG:4326 (projected at runtime to EPSG:3412 NSIDC South Polar Stereographic)"
+  },
+  "waypoints": {
+    "cape_town": {
+      "lon": 18.4241,
+      "lat": -33.9249,
+      "elevation_m": 15,
+      "name": "Cape Town Port",
+      "country": "South Africa",
+      "agency": "Transnet / Expedition Staging",
+      "role": "Expedition staging port (open-water transit origin)",
+      "kind": "port"
+    },
+    "ice_entry": {
+      "lon": 52.5,
+      "lat": -56.0,
+      "elevation_m": 0,
+      "name": "56°S Pack-Ice Entry Gate",
+      "country": "Southern Ocean",
+      "agency": "IMO Polar Code Boundary",
+      "role": "Indian Ocean sector pack-ice entry waypoint",
+      "kind": "gate"
+    },
+    "bharati": {
+      "lon": 76.195,
+      "lat": -69.4067,
+      "elevation_m": 42,
+      "name": "Bharati Station",
+      "country": "India (NCPOR)",
+      "agency": "National Centre for Polar and Ocean Research (MoES)",
+      "role": "Primary Indian resupply & oceanographic station (Larsemann Hills, Prydz Bay)",
+      "kind": "station"
+    },
+    "maitri": {
+      "lon": 11.7333,
+      "lat": -70.7667,
+      "elevation_m": 117,
+      "name": "Maitri Station",
+      "country": "India (NCPOR)",
+      "agency": "National Centre for Polar and Ocean Research (MoES)",
+      "role": "Inland oasis research station (Schirmacher Oasis, Dronning Maud Land)",
+      "kind": "station"
+    },
+    "mawson": {
+      "lon": 62.8742,
+      "lat": -67.6028,
+      "elevation_m": 15,
+      "name": "Mawson Station",
+      "country": "Australia (AAD)",
+      "agency": "Australian Antarctic Division",
+      "role": "Coastal station at Holme Bay (Mac. Robertson Land)",
+      "kind": "station"
+    },
+    "davis": {
+      "lon": 77.9675,
+      "lat": -68.5767,
+      "elevation_m": 18,
+      "name": "Davis Station",
+      "country": "Australia (AAD)",
+      "agency": "Australian Antarctic Division",
+      "role": "Coastal station at Vestfold Hills (Princess Elizabeth Land)",
+      "kind": "station"
+    },
+    "syowa": {
+      "lon": 39.5836,
+      "lat": -69.0044,
+      "elevation_m": 29,
+      "name": "Syowa Station",
+      "country": "Japan (NIPR)",
+      "agency": "National Institute of Polar Research",
+      "role": "Coastal station on East Ongul Island (Lützow-Holm Bay)",
+      "kind": "station"
+    }
+  },
+  "roads_and_traverses": [
+    {
+      "id": "traverse-maitri-novo",
+      "name": "Maitri–Novolazarevskaya Airfield Road & Lazarev Ice Shelf Haul Route",
+      "type": "All-weather gravel oasis road & snow-compacted ice-shelf haul route",
+      "surface": "Compacted glacial moraine & snow-cats",
+      "coordinates": [
+        [11.55, -69.92],
+        [11.68, -70.35],
+        [11.7333, -70.7667],
+        [11.83, -70.82],
+        [12.15, -71.35]
+      ]
+    },
+    {
+      "id": "traverse-larsemann-hills",
+      "name": "Larsemann Hills Station Road (Bharati ↔ Progress Airfield ↔ Plateau Route)",
+      "type": "Coastal bedrock road & inland polar plateau traverse",
+      "surface": "Exposed gneiss bedrock & groomed ice road",
+      "coordinates": [
+        [76.195, -69.4067],
+        [76.38, -69.38],
+        [76.65, -69.75],
+        [75.8, -70.65],
+        [74.9, -71.8]
+      ]
+    },
+    {
+      "id": "traverse-davis-vestfold",
+      "name": "Vestfold Hills–Whoop Whoop Skiway Road",
+      "type": "Ice-sheet skiway access road",
+      "surface": "Compacted blue-ice & snow road",
+      "coordinates": [
+        [77.9675, -68.5767],
+        [78.35, -68.48],
+        [78.8, -68.95],
+        [79.4, -69.6]
+      ]
+    },
+    {
+      "id": "traverse-mawson-framnes",
+      "name": "Mawson–Framnes Mountains Glaciological Traverse",
+      "type": "Tracked vehicle scientific traverse corridor",
+      "surface": "Blue-ice & sastrugi snow trail",
+      "coordinates": [
+        [62.8742, -67.6028],
+        [62.75, -68.15],
+        [62.4, -68.85],
+        [63.2, -69.7],
+        [65.0, -70.8]
+      ]
+    },
+    {
+      "id": "traverse-syowa-mizuho",
+      "name": "Syowa–Mizuho–Dome Fuji Inland Traverse Route",
+      "type": "JARE Heavy Oversnow Traverse Road",
+      "surface": "Groomed polar plateau snow highway",
+      "coordinates": [
+        [39.5836, -69.0044],
+        [40.2, -69.65],
+        [41.5, -70.45],
+        [43.2, -71.4],
+        [44.1, -72.3]
+      ]
+    }
+  ]
+}

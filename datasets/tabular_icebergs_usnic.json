@@ -1,0 +1,80 @@
+{
+  "metadata": {
+    "dataset_name": "USNIC / BYU Scatterometer Tracked Antarctic Tabular Icebergs",
+    "source": "US National Ice Center (USNIC) & Brigham Young University (BYU) Center for Remote Sensing",
+    "url": "https://www.scp.byu.edu/data/iceberg/",
+    "secondary_url": "https://usicecenter.gov/Products/AntarcticIcebergs",
+    "license": "U.S. Government Public Domain",
+    "description": "Real-world tracked tabular icebergs in the Indian Ocean / East Antarctica sector with dimensions, freeboard height, and wind/current drift parameters."
+  },
+  "bergs": [
+    {
+      "id": "D-28",
+      "name": "Tabular Berg D-28 ('Molar Berg')",
+      "size_nm": "16 × 11 NM",
+      "length_km": 30,
+      "width_km": 20,
+      "freeboard_m": 42,
+      "draft_m": 240,
+      "calved_from": "Amery Ice Shelf",
+      "lon": 64.2,
+      "lat": -62.4,
+      "u10_e": 6.8,
+      "u10_n": -1.6,
+      "cur_e": -0.09,
+      "cur_n": -0.02,
+      "label": "D-28 (16×11 NM · Cooperation Sea)"
+    },
+    {
+      "id": "B-22A",
+      "name": "Tabular Berg B-22A Fragment",
+      "size_nm": "12 × 8 NM",
+      "length_km": 22,
+      "width_km": 15,
+      "freeboard_m": 38,
+      "draft_m": 210,
+      "calved_from": "Thwaites / East Drift",
+      "lon": 71.8,
+      "lat": -65.1,
+      "u10_e": 6.0,
+      "u10_n": 1.3,
+      "cur_e": -0.08,
+      "cur_n": 0.01,
+      "label": "B-22A (12×8 NM · Prydz Approach)"
+    },
+    {
+      "id": "A-74",
+      "name": "Tabular Berg A-74 Sector",
+      "size_nm": "19 × 10 NM",
+      "length_km": 35,
+      "width_km": 18,
+      "freeboard_m": 46,
+      "draft_m": 265,
+      "calved_from": "Brunt Ice Shelf",
+      "lon": 36.5,
+      "lat": -64.2,
+      "u10_e": 6.4,
+      "u10_n": 0.9,
+      "cur_e": -0.07,
+      "cur_n": 0.01,
+      "label": "A-74 (19×10 NM · Cosmonaut Sea)"
+    },
+    {
+      "id": "A-76A",
+      "name": "Tabular Berg A-76A Residual",
+      "size_nm": "14 × 7 NM",
+      "length_km": 26,
+      "width_km": 13,
+      "freeboard_m": 35,
+      "draft_m": 195,
+      "calved_from": "Ronne Ice Shelf",
+      "lon": 18.4,
+      "lat": -64.8,
+      "u10_e": 5.9,
+      "u10_n": 0.8,
+      "cur_e": -0.06,
+      "cur_n": 0.02,
+      "label": "A-76A (14×7 NM · Lazarev Approach)"
+    }
+  ]
+}

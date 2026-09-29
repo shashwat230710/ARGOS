@@ -1,0 +1,141 @@
+{
+  "metadata": {
+    "dataset_name": "East Antarctica Digital Elevation Model (BedMachine v3 / REMA) & Bathymetry (IBCSO v2)",
+    "source": "NASA MEaSUREs BedMachine Antarctica v3 (NSIDC-0756), Reference Elevation Model of Antarctica (REMA), and IBCSO v2",
+    "url": "https://nsidc.org/data/nsidc-0756/versions/3",
+    "doi": "https://doi.org/10.5067/FPSU0V1MWUB6",
+    "license": "CC-BY 4.0 / NASA Open Data",
+    "description": "Topographic mountain peaks, glacial ice shelves, coastal rock oases, and Southern Ocean bathymetric basins for 3D terrain rendering and destination inspection."
+  },
+  "landmarks": [
+    { "name": "SOUTHERN OCEAN\n(INDIAN SECTOR)", "lon": 42.0, "lat": -57.5, "kind": "ocean", "elevation_m": -4150 },
+    { "name": "COSMONAUT SEA", "lon": 41.0, "lat": -64.8, "kind": "sea", "elevation_m": -3200 },
+    { "name": "COOPERATION SEA", "lon": 66.0, "lat": -64.2, "kind": "sea", "elevation_m": -2850 },
+    { "name": "PRYDZ BAY", "lon": 74.5, "lat": -67.8, "kind": "sea", "elevation_m": -680 },
+    { "name": "DAVIS SEA", "lon": 89.5, "lat": -65.2, "kind": "sea", "elevation_m": -1450 },
+    { "name": "LAZAREV SEA", "lon": 8.0, "lat": -66.8, "kind": "sea", "elevation_m": -2900 },
+    { "name": "DRONNING MAUD LAND", "lon": 18.0, "lat": -72.8, "kind": "land", "elevation_m": 2450 },
+    { "name": "ENDERBY LAND", "lon": 50.5, "lat": -68.8, "kind": "land", "elevation_m": 1850 },
+    { "name": "MAC. ROBERTSON LAND", "lon": 64.0, "lat": -70.5, "kind": "land", "elevation_m": 1920 },
+    { "name": "AMERY ICE SHELF", "lon": 71.5, "lat": -70.4, "kind": "shelf", "elevation_m": 65 },
+    { "name": "LAZAREV ICE SHELF", "lon": 14.0, "lat": -69.9, "kind": "shelf", "elevation_m": 48 },
+    { "name": "WEST ICE SHELF", "lon": 84.5, "lat": -66.9, "kind": "shelf", "elevation_m": 55 },
+    { "name": "LAMBERT GLACIER", "lon": 70.2, "lat": -72.6, "kind": "glacier", "elevation_m": 890 },
+    { "name": "PRINCESS ELIZABETH LAND", "lon": 83.5, "lat": -69.8, "kind": "land", "elevation_m": 2100 },
+    { "name": "PRINCE CHARLES MTS\n(MT. MENZIES 3,228m)", "lon": 66.5, "lat": -72.2, "kind": "mountain", "elevation_m": 3228 },
+    { "name": "WOHLTHAT MOUNTAINS\n(2,970m)", "lon": 12.2, "lat": -71.6, "kind": "mountain", "elevation_m": 2970 },
+    { "name": "SØR RONDANE MTS\n(3,180m)", "lon": 25.5, "lat": -72.1, "kind": "mountain", "elevation_m": 3180 },
+    { "name": "FRAMNES MOUNTAINS\n(1,490m)", "lon": 62.5, "lat": -68.1, "kind": "mountain", "elevation_m": 1490 },
+    { "name": "GROVE MOUNTAINS\n(2,100m)", "lon": 74.9, "lat": -72.9, "kind": "mountain", "elevation_m": 2100 }
+  ],
+  "mountains": [
+    {
+      "id": "mt-prince-charles",
+      "name": "Prince Charles Mountains (Mt. Menzies)",
+      "lon": 66.5,
+      "lat": -72.2,
+      "peak_m": 3228,
+      "radius_lon": 5.5,
+      "radius_lat": 1.8
+    },
+    {
+      "id": "mt-wohlthat",
+      "name": "Wohlthat & Mühlig-Hofmann Mountains",
+      "lon": 12.2,
+      "lat": -71.6,
+      "peak_m": 2970,
+      "radius_lon": 6.2,
+      "radius_lat": 1.5
+    },
+    {
+      "id": "mt-sor-rondane",
+      "name": "Sør Rondane Mountains",
+      "lon": 25.5,
+      "lat": -72.1,
+      "peak_m": 3180,
+      "radius_lon": 5.0,
+      "radius_lat": 1.5
+    },
+    {
+      "id": "mt-enderby-napier",
+      "name": "Napier & Scott Mountains (Enderby Land)",
+      "lon": 51.2,
+      "lat": -67.8,
+      "peak_m": 1950,
+      "radius_lon": 5.2,
+      "radius_lat": 1.4
+    },
+    {
+      "id": "mt-framnes",
+      "name": "Framnes Mountains (Holme Bay)",
+      "lon": 62.5,
+      "lat": -68.1,
+      "peak_m": 1490,
+      "radius_lon": 3.5,
+      "radius_lat": 1.1
+    },
+    {
+      "id": "mt-grove",
+      "name": "Grove Mountains (Princess Elizabeth Land)",
+      "lon": 74.9,
+      "lat": -72.9,
+      "peak_m": 2100,
+      "radius_lon": 4.2,
+      "radius_lat": 1.4
+    }
+  ],
+  "ice_shelves": [
+    {
+      "id": "shelf-amery",
+      "name": "Amery Ice Shelf & Lambert Glacier Tongue",
+      "freeboard_m": 65,
+      "thickness_m": 550,
+      "coordinates": [
+        [68.5, -68.6],
+        [73.8, -68.9],
+        [74.2, -71.8],
+        [67.8, -71.6],
+        [68.5, -68.6]
+      ]
+    },
+    {
+      "id": "shelf-lazarev",
+      "name": "Lazarev Ice Shelf (Schirmacher Coast)",
+      "freeboard_m": 48,
+      "thickness_m": 380,
+      "coordinates": [
+        [12.5, -69.5],
+        [15.8, -69.6],
+        [15.5, -70.6],
+        [12.2, -70.5],
+        [12.5, -69.5]
+      ]
+    },
+    {
+      "id": "shelf-west",
+      "name": "West Ice Shelf (Davis Sea)",
+      "freeboard_m": 55,
+      "thickness_m": 410,
+      "coordinates": [
+        [81.5, -66.4],
+        [87.8, -66.5],
+        [87.5, -67.8],
+        [81.2, -67.7],
+        [81.5, -66.4]
+      ]
+    },
+    {
+      "id": "shelf-fimbul",
+      "name": "Fimbul Ice Shelf (Dronning Maud Coast)",
+      "freeboard_m": 50,
+      "thickness_m": 390,
+      "coordinates": [
+        [-2.0, -69.4],
+        [4.5, -69.5],
+        [4.2, -70.8],
+        [-2.2, -70.7],
+        [-2.0, -69.4]
+      ]
+    }
+  ]
+}

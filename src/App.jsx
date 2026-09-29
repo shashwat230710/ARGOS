@@ -18,6 +18,8 @@ import Projection from "ol/proj/Projection";
 
 import { getJSON, unpack, sliceLead } from "./api.js";
 import { paintGrid } from "./colormap.js";
+import Map3DView from "./Map3DView.jsx";
+import LandingPage from "./LandingPage.jsx";
 
 const EPSG_3412 =
   "+proj=stere +lat_0=-90 +lat_ts=-70 +lon_0=0 +x_0=0 +y_0=0 +a=6378273 +b=6356889.449 +units=m +no_defs";
@@ -258,21 +260,48 @@ export default function App() {
   const [timelineStep, setTimelineStep] = useState(1); // -6..0 = history days, 1..7 = forecast lead days
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // Overlay toggles & Ship Tracking state
+  // Overlay toggles & Ship Tracking state (Default: ONLY the 5 requested layers checked)
   const [showIceContours, setShowIceContours] = useState(true);
   const [showIceVectors, setShowIceVectors] = useState(true);
   const [showIcebergs, setShowIcebergs] = useState(true);
   const [showRoutes, setShowRoutes] = useState(true);
-  const [showCourseCorrections, setShowCourseCorrections] = useState(true);
+  const [showCourseCorrections, setShowCourseCorrections] = useState(false);
   const [showStations, setShowStations] = useState(true);
-  const [showGraticule, setShowGraticule] = useState(true);
+  const [showGraticule, setShowGraticule] = useState(false);
+  const [showRoads, setShowRoads] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState(null);
   const [shipStepIdx, setShipStepIdx] = useState(null);
   const [autoFollowShip, setAutoFollowShip] = useState(false);
-  const [showShipBridge, setShowShipBridge] = useState(true);
+  const [showShipBridge, setShowShipBridge] = useState(false);
 
-  // Routing parameters
-  const [leg, setLeg] = useState("ice_entry->bharati");
+  // Collapsible Left & Right Side Panels + Interactive Landing Page state
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [showLanding, setShowLanding] = useState(false);
+
+  // 3D Globe / Map, Satellite/Terrain Basemap, Legend, Search & Destination State
+  const [viewMode, setViewMode] = useState("3d"); // "3d" | "2d"
+  const [globeMode, setGlobeMode] = useState(true); // Interactive 3D Polar Globe enabled by default
+  const [basemapStyle, setBasemapStyle] = useState("satellite"); // "satellite" | "terrain" | "scientific"
+  const [verticalExaggeration, setVerticalExaggeration] = useState(1.25);
+  const [showMapLegend, setShowMapLegend] = useState(false);
+  const [elevationGrid, setElevationGrid] = useState(null);
+  const [surfaceTypeGrid, setSurfaceTypeGrid] = useState(null);
+  const [activeSliceState, setActiveSliceState] = useState(null);
+
+  // "Choose Where I Want to Go" (Select Destination) state
+  const [isSelectingDestination, setIsSelectingDestination] = useState(false);
+  const [selectedDestination, setSelectedDestination] = useState(null); // candidate or active destination info
+  const [customDestination, setCustomDestination] = useState(null); // confirmed destination stored for A* routing
+  const [loadingDestInfo, setLoadingDestInfo] = useState(false);
+
+  // Search Location state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+
+  // Routing parameters (Default: Bharati Station to Maitri Station)
+  const [leg, setLeg] = useState("bharati->maitri");
   const [forecastSource, setForecastSource] = useState("auto");
   const [wRisk, setWRisk] = useState(0.45);
   const [wTime, setWTime] = useState(1.0);
@@ -284,8 +313,11 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState(null);
 
   const mapContainerRef = useRef(null);
+  const map3DRef = useRef(null);
   const probeTextRef = useRef(null);
   const mapRef = useRef(null);
+  const isSelectingDestRef = useRef(false);
+  const handlePickDestinationRef = useRef(null);
   const rasterLayerRef = useRef(null);
   const landLayerRef = useRef(null);
   const graticuleSourceRef = useRef(new VectorSource());
@@ -303,6 +335,8 @@ export default function App() {
         const sc = await getJSON("/api/scenario");
         setScenario(sc);
         setDate(sc.d0);
+        if (sc.elevation) setElevationGrid(unpack(sc.elevation));
+        if (sc.surface_type) setSurfaceTypeGrid(unpack(sc.surface_type));
 
         const [bergsRes, valRes, hcRes, mlRes] = await Promise.all([
           getJSON("/api/icebergs?day_offset=0"),
@@ -460,8 +494,14 @@ export default function App() {
       probeTextRef.current.textContent = `${latStr}, ${lonStr} · ${cellStr} · ${sicStr}`;
     });
 
-    // Click to inspect any interactive feature (station, iceberg, ship, avoidance waypoint)
+    // Click to select destination directly on the map or inspect any interactive feature
     map.on("singleclick", (evt) => {
+      if (isSelectingDestRef.current && handlePickDestinationRef.current) {
+        const [xm, ym] = evt.coordinate;
+        const [lon, lat] = proj4("EPSG:3412", "EPSG:4326", [xm, ym]);
+        handlePickDestinationRef.current({ lon, lat, x_m: xm, y_m: ym, autoRoute: true });
+        return;
+      }
       let hit = null;
       map.forEachFeatureAtPixel(
         evt.pixel,
@@ -473,11 +513,40 @@ export default function App() {
         },
         { hitTolerance: 8 }
       );
-      setSelectedTarget(hit);
+      if (hit) {
+        setSelectedTarget(hit);
+      } else if (handlePickDestinationRef.current) {
+        const [xm, ym] = evt.coordinate;
+        if (
+          xm >= extent[0] &&
+          xm <= extent[2] &&
+          ym >= extent[1] &&
+          ym <= extent[3]
+        ) {
+          const [lon, lat] = proj4("EPSG:3412", "EPSG:4326", [xm, ym]);
+          handlePickDestinationRef.current({
+            lon,
+            lat,
+            x_m: xm,
+            y_m: ym,
+            autoRoute: true,
+          });
+        }
+      }
     });
 
     mapRef.current = map;
   }, [scenario]);
+
+  // Keep OpenLayers 2D map sized properly when toggling between 3D and 2D or hiding/showing side panels
+  useEffect(() => {
+    if (mapRef.current) {
+      const t = setTimeout(() => {
+        mapRef.current?.updateSize();
+      }, 60);
+      return () => clearTimeout(t);
+    }
+  }, [viewMode, leftPanelOpen, rightPanelOpen, showLanding]);
 
   // 2b. Render Real-World Polar Stereographic Graticule (Lat/Lon Grid) & Geographic Landmarks
   useEffect(() => {
@@ -682,7 +751,7 @@ export default function App() {
       .catch(() => {});
   }, [scenario, date, timelineStep, activeLayer, mlStatus?.model?.totalEpochs]);
 
-  // 4. Plan route whenever date, leg, forecastSource, wRisk, wTime, or model epochs change
+  // 4. Plan route whenever date, leg, customDestination, forecastSource, wRisk, wTime, or model epochs change
   useEffect(() => {
     if (!scenario || !date) return;
     let cancelled = false;
@@ -697,9 +766,16 @@ export default function App() {
         w_time: wTime,
         forecast_source: forecastSource,
         start: startKey,
-        goal: goalKey,
+        goal: customDestination ? "custom" : goalKey,
         from_row: shipPos ? shipPos.row : null,
         from_col: shipPos ? shipPos.col : null,
+        to_row: customDestination ? customDestination.row : null,
+        to_col: customDestination ? customDestination.col : null,
+        custom_dest_name: customDestination
+          ? customDestination.custom_name ||
+            customDestination.nearest_feature ||
+            "Selected Destination"
+          : null,
       }),
     })
       .then((res) => {
@@ -717,7 +793,16 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [scenario, date, leg, forecastSource, wRisk, wTime, mlStatus?.model?.totalEpochs]);
+  }, [
+    scenario,
+    date,
+    leg,
+    customDestination,
+    forecastSource,
+    wRisk,
+    wTime,
+    mlStatus?.model?.totalEpochs,
+  ]);
 
   // 5. Play animation timer for timeline
   useEffect(() => {
@@ -786,6 +871,7 @@ export default function App() {
 
     const { slice, mode } = getSliceForLayer(activeLayer);
     activeSliceRef.current = { slice, mode, land: forecast.land };
+    setActiveSliceState({ slice, mode, land: forecast.land });
 
     const canvas = document.createElement("canvas");
     if (!swipeEnabled) {
@@ -1089,7 +1175,129 @@ export default function App() {
       );
       src.addFeature(feat);
     }
-  }, [scenario, showStations]);
+
+    // Also render Overland Traverses / Station Roads in 2D when showRoads is active
+    if (showRoads && scenario.traverses?.length) {
+      for (const tr of scenario.traverses) {
+        if (!tr.coords_xy || tr.coords_xy.length < 2) continue;
+        const trFeat = new Feature({
+          geometry: new LineString(tr.coords_xy),
+          inspect: {
+            kind: "Antarctic Overland Ice-Sheet Traverse / Road",
+            title: tr.name,
+            subtitle: `${tr.surface} · Distance ${tr.distance_km} km`,
+            metrics: [
+              { label: "Route Type", value: tr.surface },
+              { label: "Length", value: `${tr.distance_km} km` },
+              { label: "Notes", value: tr.description },
+            ],
+          },
+        });
+        trFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "rgba(251, 191, 36, 0.85)",
+              width: 2.2,
+              lineDash: [5, 4],
+            }),
+          })
+        );
+        src.addFeature(trFeat);
+      }
+    }
+
+    // Render User-Selected Destination Pin on 2D Chart as well
+    if (selectedDestination) {
+      const destInspect = {
+        kind: "Selected Custom Destination",
+        title:
+          selectedDestination.custom_name ||
+          selectedDestination.nearest_feature ||
+          "Selected Map Destination",
+        subtitle: `${Math.abs(selectedDestination.lat).toFixed(
+          3
+        )}°S, ${Math.abs(selectedDestination.lon).toFixed(3)}°${
+          selectedDestination.lon >= 0 ? "E" : "W"
+        }`,
+        metrics: [
+          {
+            label: "Surface Classification",
+            value: selectedDestination.surface_type || "Polar Surface",
+          },
+          {
+            label: "Elevation / Ocean Depth",
+            value: `${selectedDestination.elevation_m >= 0 ? "+" : ""}${
+              selectedDestination.elevation_m ?? 0
+            } m`,
+          },
+          {
+            label: "Local Sea-Ice Concentration",
+            value: selectedDestination.is_land
+              ? "Land / Ice Shelf"
+              : `${selectedDestination.sic_pct ?? 0}% SIC`,
+          },
+          {
+            label: "Distance from Ship / Start",
+            value: `${selectedDestination.direct_distance_km ?? "—"} km (${
+              selectedDestination.direct_distance_nm ?? "—"
+            } NM)`,
+          },
+        ],
+      };
+
+      const dPin = new Feature({
+        geometry: new Point([selectedDestination.x_m, selectedDestination.y_m]),
+        inspect: destInspect,
+      });
+      dPin.setStyle(
+        new Style({
+          image: new CircleStyle({
+            radius: 7.5,
+            fill: new Fill({ color: "#ec4899" }),
+            stroke: new Stroke({ color: "#fdf2f8", width: 2.5 }),
+          }),
+          text: new TextStyle({
+            text: `DESTINATION PIN: ${
+              selectedDestination.custom_name ||
+              selectedDestination.nearest_feature ||
+              "SELECTED POINT"
+            }\n${Math.abs(selectedDestination.lat).toFixed(2)}°S, ${Math.abs(
+              selectedDestination.lon
+            ).toFixed(2)}°E (${selectedDestination.direct_distance_km ?? "—"} km)`,
+            offsetY: -22,
+            font: "600 10px 'JetBrains Mono', monospace",
+            fill: new Fill({ color: "#fbcfe8" }),
+            stroke: new Stroke({ color: "#07090e", width: 3.4 }),
+          }),
+        })
+      );
+      src.addFeature(dPin);
+
+      // If destination is inland, draw dashed overland link from coastal ship anchorage to destination pin on 2D chart
+      if (
+        selectedDestination.is_land &&
+        selectedDestination.nav_x_m != null &&
+        selectedDestination.nav_y_m != null
+      ) {
+        const linkFeat = new Feature({
+          geometry: new LineString([
+            [selectedDestination.nav_x_m, selectedDestination.nav_y_m],
+            [selectedDestination.x_m, selectedDestination.y_m],
+          ]),
+        });
+        linkFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "#f43f5e",
+              width: 2.2,
+              lineDash: [5, 4],
+            }),
+          })
+        );
+        src.addFeature(linkFeat);
+      }
+    }
+  }, [scenario, showStations, showRoads, selectedDestination]);
 
   // Compute active ship step index and live ship telemetry
   const activeShipIdx = useMemo(() => {
@@ -1139,54 +1347,212 @@ export default function App() {
     };
   }, [routeData, activeShipIdx, shipPos]);
 
-  // Camera sector & ship focus helpers
-  function handleFocusMapSector(sector) {
-    if (!mapRef.current || !scenario) return;
-    const view = mapRef.current.getView();
-    if (sector === "full") {
-      setAutoFollowShip(false);
-      view.fit(scenario.extent, { padding: [20, 20, 20, 20], duration: 420 });
-    } else if (sector === "prydz") {
-      setAutoFollowShip(false);
-      const bharati = scenario.stations?.bharati;
-      const center = bharati
-        ? [bharati.x_m, bharati.y_m + 350000]
-        : [2200000, 900000];
-      view.animate({ center, zoom: 3.3, duration: 420 });
-    } else if (sector === "maitri") {
-      setAutoFollowShip(false);
-      const maitri = scenario.stations?.maitri;
-      const center = maitri
-        ? [maitri.x_m + 350000, maitri.y_m + 350000]
-        : [800000, 2100000];
-      view.animate({ center, zoom: 3.2, duration: 420 });
-    } else if (sector === "ship" && activeShipTelemetry) {
-      view.animate({
-        center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
-        zoom: Math.max(view.getZoom() || 3, 4.2),
+  // "Choose Where I Want to Go" — Pick Destination on 3D or 2D Map or from Search
+  async function handlePickDestinationPoint({
+    lon,
+    lat,
+    x_m,
+    y_m,
+    custom_name = null,
+    autoRoute = true,
+  }) {
+    try {
+      setLoadingDestInfo(true);
+      const startKey = leg.split("->")[0] || "ice_entry";
+      const info = await getJSON("/api/location-info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lon,
+          lat,
+          x_m,
+          y_m,
+          date,
+          lead: Math.max(0, Math.min(6, timelineStep - 1)),
+          start_key: startKey,
+          from_row: activeShipTelemetry?.row ?? shipPos?.row ?? null,
+          from_col: activeShipTelemetry?.col ?? shipPos?.col ?? null,
+        }),
+      });
+      const enriched = {
+        ...info,
+        custom_name: custom_name || info.nearest_feature,
+        updatedAt: Date.now(),
+      };
+      setSelectedDestination(enriched);
+      setIsSelectingDestination(false);
+      if (autoRoute) {
+        setShowRoutes(true);
+        setCustomDestination(enriched);
+        setShipStepIdx(null);
+      }
+    } catch (err) {
+      setErrorMsg(err.message || "Failed to inspect selected destination");
+    } finally {
+      setLoadingDestInfo(false);
+    }
+  }
+
+  function handleActivateRouteToDestination(destObj = selectedDestination) {
+    if (!destObj) return;
+    const nextDest = {
+      ...destObj,
+      updatedAt: Date.now(),
+    };
+    setSelectedDestination(nextDest);
+    setCustomDestination(nextDest);
+    setShowRoutes(true);
+    setIsSelectingDestination(false);
+    setShipStepIdx(null);
+    handleFocusMapCoord(destObj.x_m, destObj.y_m, false);
+  }
+
+  useEffect(() => {
+    isSelectingDestRef.current = isSelectingDestination;
+    handlePickDestinationRef.current = handlePickDestinationPoint;
+  });
+
+  function handleClearDestination() {
+    setSelectedDestination(null);
+    setCustomDestination(null);
+    setIsSelectingDestination(false);
+    setShipStepIdx(null);
+  }
+
+  // Search Location by name, station, mountain, ice shelf, or "lat, lon" coordinates
+  function handleSearchInput(val) {
+    setSearchQuery(val);
+    const q = val.trim();
+    if (!q) {
+      setSearchResults(scenario?.searchable_locations?.slice(0, 8) || []);
+      return;
+    }
+
+    // Check if user entered coordinates e.g. "-68.5, 75.2" or "68.5S 75.2E"
+    const coordMatch = q.match(
+      /^(-?\d+(?:\.\d+)?)\s*°?\s*([NSns])?\s*[,;\s]\s*(-?\d+(?:\.\d+)?)\s*°?\s*([EWew])?$/
+    );
+    const list = [];
+    if (coordMatch) {
+      let latNum = parseFloat(coordMatch[1]);
+      const ns = (coordMatch[2] || "S").toUpperCase();
+      if (ns === "S" && latNum > 0) latNum = -latNum;
+      let lonNum = parseFloat(coordMatch[3]);
+      const ew = (coordMatch[4] || "E").toUpperCase();
+      if (ew === "W" && lonNum > 0) lonNum = -lonNum;
+      const [xm, ym] = proj4("EPSG:4326", "EPSG:3412", [lonNum, latNum]);
+      list.push({
+        id: `coord-${latNum}-${lonNum}`,
+        name: `Coordinates ${Math.abs(latNum).toFixed(2)}°S, ${Math.abs(
+          lonNum
+        ).toFixed(2)}°${lonNum >= 0 ? "E" : "W"}`,
+        category: "Custom Lat/Lon Coordinate",
+        lat: latNum,
+        lon: lonNum,
+        x_m: xm,
+        y_m: ym,
+        description: "Direct geographic coordinate inside polar stereographic sector",
+      });
+    }
+
+    const catalog = scenario?.searchable_locations || [];
+    const ql = q.toLowerCase();
+    for (const item of catalog) {
+      if (
+        item.name.toLowerCase().includes(ql) ||
+        item.category.toLowerCase().includes(ql) ||
+        (item.description && item.description.toLowerCase().includes(ql))
+      ) {
+        list.push(item);
+      }
+    }
+    setSearchResults(list.slice(0, 10));
+  }
+
+  function handleFocusMapCoord(xm, ym, closeUp = false) {
+    setAutoFollowShip(false);
+    if (viewMode === "3d" && map3DRef.current) {
+      map3DRef.current.focusMapCoord(xm, ym, closeUp);
+    }
+    if (mapRef.current) {
+      mapRef.current.getView().animate({
+        center: [xm, ym],
+        zoom: closeUp ? 4.4 : 3.4,
         duration: 420,
       });
     }
   }
 
-  function handleZoomToShip(closeUp = true) {
-    if (!mapRef.current || !activeShipTelemetry) return;
-    const view = mapRef.current.getView();
-    view.animate({
-      center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
-      zoom: closeUp ? 4.7 : 3.6,
-      duration: 450,
-    });
+  // Camera sector & ship focus helpers (works across both 3D Map and 2D Chart)
+  function handleFocusMapSector(sector) {
+    if (!scenario) return;
+    setAutoFollowShip(false);
+    if (sector === "full") {
+      if (viewMode === "3d" && map3DRef.current) {
+        map3DRef.current.resetView();
+      }
+      if (mapRef.current) {
+        mapRef.current
+          .getView()
+          .fit(scenario.extent, { padding: [20, 20, 20, 20], duration: 420 });
+      }
+    } else if (sector === "prydz") {
+      const bharati = scenario.stations?.bharati;
+      const center = bharati
+        ? [bharati.x_m, bharati.y_m + 200000]
+        : [2200000, 900000];
+      handleFocusMapCoord(center[0], center[1], false);
+    } else if (sector === "maitri") {
+      const maitri = scenario.stations?.maitri;
+      const center = maitri
+        ? [maitri.x_m + 200000, maitri.y_m + 200000]
+        : [800000, 2100000];
+      handleFocusMapCoord(center[0], center[1], false);
+    } else if (sector === "ship" && activeShipTelemetry) {
+      handleFocusMapCoord(
+        activeShipTelemetry.x_m,
+        activeShipTelemetry.y_m,
+        true
+      );
+    }
   }
 
-  // Keep camera centered on ship when Auto-Follow Ship is enabled
+  function handleZoomToShip(closeUp = true) {
+    if (!activeShipTelemetry) return;
+    if (viewMode === "3d" && map3DRef.current) {
+      map3DRef.current.focusMapCoord(
+        activeShipTelemetry.x_m,
+        activeShipTelemetry.y_m,
+        closeUp
+      );
+    }
+    if (mapRef.current) {
+      const view = mapRef.current.getView();
+      view.animate({
+        center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
+        zoom: closeUp ? 4.7 : 3.6,
+        duration: 450,
+      });
+    }
+  }
+
+  // Keep camera centered on ship when Auto-Follow Ship is enabled (3D + 2D)
   useEffect(() => {
-    if (!autoFollowShip || !mapRef.current || !activeShipTelemetry) return;
-    mapRef.current.getView().animate({
-      center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
-      duration: 240,
-    });
-  }, [autoFollowShip, activeShipTelemetry]);
+    if (!autoFollowShip || !activeShipTelemetry) return;
+    if (viewMode === "3d" && map3DRef.current) {
+      map3DRef.current.focusMapCoord(
+        activeShipTelemetry.x_m,
+        activeShipTelemetry.y_m,
+        false
+      );
+    }
+    if (mapRef.current) {
+      mapRef.current.getView().animate({
+        center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
+        duration: 240,
+      });
+    }
+  }, [autoFollowShip, activeShipTelemetry, viewMode]);
 
   // 8. Update Calculated Ship Avoidance Path, Dynamic Course Corrections, High-Risk Ice Exclusion Zones & Ship Marker
   useEffect(() => {
@@ -2204,8 +2570,70 @@ export default function App() {
   const modelSummary = mlStatus?.model || scenario?.ml_summary;
   const datasetsList = mlStatus?.datasets || scenario?.datasets || [];
 
+  // Export active A* route waypoints as CSV manifest
+  function handleExportWaypointsCsv() {
+    const wps = fcMetrics?.waypoints || [];
+    if (!wps.length) return;
+    const header = "Code,Label,Latitude_S,Longitude_E,ETA_Hours,COG_Deg,Speed_kmh,Forecast_SIC_Pct\n";
+    const rows = wps
+      .map(
+        (w) =>
+          `${w.code},"${w.label}",${Math.abs(w.lat).toFixed(3)},${w.lon.toFixed(
+            3
+          )},${Math.round(w.hour)},${w.cog_deg},${w.speed_kmh},${Math.round(
+            w.sic * 100
+          )}`
+      )
+      .join("\n");
+    const blob = new Blob([header + rows], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `argos_route_manifest_${date}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return (
-    <div className="dss-shell">
+    <>
+      {showLanding && (
+        <LandingPage
+          scenario={scenario}
+          routeData={routeData}
+          validation={validation}
+          hindcast={hindcast}
+          leg={leg}
+          setLeg={setLeg}
+          wRisk={wRisk}
+          setWRisk={setWRisk}
+          wTime={wTime}
+          setWTime={setWTime}
+          onEnterConsole={(opts) => {
+            setShowLanding(false);
+            if (opts?.enableSelectDestination) {
+              setIsSelectingDestination(true);
+            }
+          }}
+          onLaunchStationDestination={({ lon, lat, name, legPreset }) => {
+            setShowLanding(false);
+            if (legPreset) setLeg(legPreset);
+            const [xm, ym] = proj4("EPSG:4326", "EPSG:3412", [lon, lat]);
+            handleFocusMapCoord(xm, ym, true);
+            handlePickDestinationPoint({
+              lon,
+              lat,
+              x_m: xm,
+              y_m: ym,
+              custom_name: name,
+              autoRoute: true,
+            });
+          }}
+          onOpenDrawer={(d) => setDrawer(d)}
+        />
+      )}
+      <div className="dss-shell">
       {/* Strict 3-Zone Top Bar Contract */}
       <header className="dss-header">
         {/* Zone 1: Single-element Brand Wordmark */}
@@ -2222,6 +2650,13 @@ export default function App() {
 
         {/* Zone 2: Clean single-line text navigation links */}
         <nav className="dss-topnav" aria-label="Workspace Views">
+          <button
+            type="button"
+            className={`dss-navlink ${showLanding ? "active" : ""}`}
+            onClick={() => setShowLanding(true)}
+          >
+            Mission Overview
+          </button>
           <button
             type="button"
             className={`dss-navlink ${drawer === "ml" ? "active" : ""}`}
@@ -2307,73 +2742,57 @@ export default function App() {
         </div>
       )}
 
-      {/* Main 3-Column Split Scientific Console */}
-      <main className="dss-main">
+      {/* Main 3-Column Split Scientific Console with Collapsible Left & Right Panels */}
+      <main
+        className={`dss-main ${!leftPanelOpen ? "left-collapsed" : ""} ${
+          !rightPanelOpen ? "right-collapsed" : ""
+        }`}
+      >
         {/* Left Control & Parameter Column */}
-        <aside className="dss-sidebar dss-left">
+        <aside
+          className={`dss-sidebar dss-left ${
+            !leftPanelOpen ? "is-collapsed" : ""
+          }`}
+          aria-hidden={!leftPanelOpen}
+        >
+          <div className="dss-sidebar-top">
+            <span>Map Layers</span>
+            <button
+              type="button"
+              className="dss-hide-panel-btn"
+              onClick={() => setLeftPanelOpen(false)}
+              title="Hide left panel to expand map"
+            >
+              ‹ Hide Panel
+            </button>
+          </div>
+
           <section className="dss-panel">
             <div className="dss-panel-head">
-              <h2>01. Raster Field Selection</h2>
-              <button
-                type="button"
-                className="dss-inline-help"
-                onClick={() => {
-                  setGuideTab("layers");
-                  setDrawer("guide");
-                }}
-              >
-                Explain layers
-              </button>
+              <h2>Sea-Ice Field</h2>
             </div>
-            <p className="dss-meta-line">
-              <span>NSIDC G02202 V6</span>
-              <span aria-hidden="true">·</span>
-              <span>EPSG:3412</span>
-              <span aria-hidden="true">·</span>
-              <span>25 km</span>
-            </p>
 
             <div className="dss-layer-list">
               {[
                 {
                   id: "ml",
-                  label: "U-Net 7-Day Forecast",
-                  meta: "Model",
+                  label: "Predicted Sea Ice (U-Net)",
                 },
                 {
                   id: "obs",
                   label: "Observed Sea Ice (NSIDC)",
-                  meta: "Satellite",
                 },
                 {
                   id: "residual",
                   label: "U-Net Residual |ΔSIC|",
-                  meta: "Neural Δ",
-                },
-                {
-                  id: "enc_grad",
-                  label: "U-Net Encoder Ice-Edge",
-                  meta: "Feature",
-                },
-                {
-                  id: "b1",
-                  label: "Seasonal Tendency (B1)",
-                  meta: "Baseline",
-                },
-                {
-                  id: "b0",
-                  label: "Persistence (B0)",
-                  meta: "Baseline",
                 },
                 {
                   id: "error",
                   label: "Absolute Error |ML − Obs|",
-                  meta: "Derived",
                 },
                 {
                   id: "uncertainty",
                   label: "Validation Uncertainty σ",
-                  meta: "Derived",
                 },
               ].map((item) => (
                 <label
@@ -2392,98 +2811,61 @@ export default function App() {
                     }}
                   />
                   <span className="dss-radio-label">{item.label}</span>
-                  <span className="dss-radio-meta">{item.meta}</span>
                 </label>
               ))}
             </div>
           </section>
 
-          {/* Small U-Net Engine Telemetry */}
+          {/* Chart Layers & Ice Prediction Checkboxes */}
           <section className="dss-panel">
             <div className="dss-panel-head">
-              <h2>02. Polar U-Net Engine</h2>
-              <button
-                type="button"
-                className="dss-inline-help"
-                onClick={() => {
-                  setMlTab("architecture");
-                  setDrawer("ml");
-                }}
-              >
-                Inspect network
-              </button>
-            </div>
-            <p className="dss-meta-line">
-              <span>2-Level Residual ConvNet</span>
-              <span aria-hidden="true">·</span>
-              <span>10ch in → 7d out</span>
-            </p>
-
-            <div className="dss-metric-grid">
-              <div className="dss-metric-cell">
-                <span className="dss-metric-label">Input Tensor</span>
-                <div className="dss-metric-val">
-                  10×160×184
-                </div>
-              </div>
-              <div className="dss-metric-cell">
-                <span className="dss-metric-label">Forward Pass</span>
-                <div className="dss-metric-val">
-                  {forecast?.inference_ms ??
-                    modelSummary?.lastInferenceMs ??
-                    "4.2"}
-                  <small>ms</small>
-                </div>
-              </div>
-              <div className="dss-metric-cell">
-                <span className="dss-metric-label">SGD Epochs</span>
-                <div className="dss-metric-val">
-                  {modelSummary?.totalEpochs ?? 8}
-                  <small>ep</small>
-                </div>
-              </div>
-              <div className="dss-metric-cell">
-                <span className="dss-metric-label">Validation MAE</span>
-                <div className="dss-metric-val accent">
-                  {modelSummary?.trainingHistory?.length
-                    ? (
-                        modelSummary.trainingHistory[
-                          modelSummary.trainingHistory.length - 1
-                        ].valMae * 100
-                      ).toFixed(2)
-                    : "2.95"}
-                  <small>%</small>
-                </div>
-              </div>
+              <h2>Active Map Layers</h2>
             </div>
 
-            <div className="dss-action-row">
-              <button
-                type="button"
-                className="dss-btn-primary"
-                onClick={() => handleTrainModel(5, false)}
-                disabled={isTraining}
-              >
-                {isTraining ? "Training SGD..." : "Train +5 Epochs"}
-              </button>
-              <button
-                type="button"
-                className="dss-btn-secondary"
-                onClick={() => {
-                  setMlTab("datasets");
-                  setDrawer("ml");
-                }}
-              >
-                Datasets
-              </button>
-            </div>
-          </section>
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showIceContours}
+                onChange={(e) => setShowIceContours(e.target.checked)}
+              />
+              <span>Predicted 15% &amp; 40% Ice Contours</span>
+            </label>
 
-          {/* Split-Screen Swipe & Vector Overlays */}
-          <section className="dss-panel">
-            <div className="dss-panel-head">
-              <h2>03. Chart Layers &amp; Ice Prediction</h2>
-            </div>
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showIceVectors}
+                onChange={(e) => setShowIceVectors(e.target.checked)}
+              />
+              <span>Predicted Sea Ice</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showRoutes}
+                onChange={(e) => setShowRoutes(e.target.checked)}
+              />
+              <span>Optimal Path &amp; Real-Time Flow</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showIcebergs}
+                onChange={(e) => setShowIcebergs(e.target.checked)}
+              />
+              <span>Tabular Bergs (D-28, B-22A, A-74)</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showStations}
+                onChange={(e) => setShowStations(e.target.checked)}
+              />
+              <span>Antarctic Stations</span>
+            </label>
 
             <label className="dss-check-row">
               <input
@@ -2503,42 +2885,8 @@ export default function App() {
                   value={swipeSplit}
                   onChange={(e) => setSwipeSplit(Number(e.target.value))}
                 />
-                <div className="dss-slider-labels">
-                  <span>Observed ({swipeSplit}%)</span>
-                  <span>U-Net ({100 - swipeSplit}%)</span>
-                </div>
               </div>
             )}
-
-            <label className="dss-check-row">
-              <input
-                type="checkbox"
-                checked={showIceContours}
-                onChange={(e) => setShowIceContours(e.target.checked)}
-              />
-              <span>Predicted 15% &amp; 40% Ice Contours</span>
-              <span className="dss-radio-meta">U-Net</span>
-            </label>
-
-            <label className="dss-check-row">
-              <input
-                type="checkbox"
-                checked={showIceVectors}
-                onChange={(e) => setShowIceVectors(e.target.checked)}
-              />
-              <span>Predicted Sea-Ice Drift Vectors</span>
-              <span className="dss-radio-meta">7d Motion</span>
-            </label>
-
-            <label className="dss-check-row">
-              <input
-                type="checkbox"
-                checked={showRoutes}
-                onChange={(e) => setShowRoutes(e.target.checked)}
-              />
-              <span>Optimal Path &amp; Real-Time Flow</span>
-              <span className="dss-radio-meta">Live A*</span>
-            </label>
 
             <label className="dss-check-row">
               <input
@@ -2546,28 +2894,7 @@ export default function App() {
                 checked={showCourseCorrections}
                 onChange={(e) => setShowCourseCorrections(e.target.checked)}
               />
-              <span>Dynamic Course Corrections &amp; Hazards</span>
-              <span className="dss-radio-meta">CC-1..4</span>
-            </label>
-
-            <label className="dss-check-row">
-              <input
-                type="checkbox"
-                checked={showIcebergs}
-                onChange={(e) => setShowIcebergs(e.target.checked)}
-              />
-              <span>Tabular Bergs (D-28, B-22A, A-74)</span>
-              <span className="dss-radio-meta">7d Cones</span>
-            </label>
-
-            <label className="dss-check-row">
-              <input
-                type="checkbox"
-                checked={showStations}
-                onChange={(e) => setShowStations(e.target.checked)}
-              />
-              <span>Antarctic Stations (6 Sites)</span>
-              <span className="dss-radio-meta">Real Coords</span>
+              <span>Dynamic Course Corrections</span>
             </label>
 
             <label className="dss-check-row">
@@ -2576,121 +2903,580 @@ export default function App() {
                 checked={showGraticule}
                 onChange={(e) => setShowGraticule(e.target.checked)}
               />
-              <span>Polar Graticule &amp; Seas/Shelves</span>
-              <span className="dss-radio-meta">EPSG:3412</span>
+              <span>Polar Graticule &amp; Landmarks</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showRoads}
+                onChange={(e) => setShowRoads(e.target.checked)}
+              />
+              <span>Overland Traverses &amp; Station Roads</span>
             </label>
           </section>
 
-          {/* Calibration Scale & Legend */}
+          {/* Compact Sea-Ice Scale */}
           <section className="dss-panel dss-panel-last">
             <div className="dss-panel-head">
-              <h2>04. Sea-Ice &amp; Navigation Legend</h2>
+              <h2>Sea-Ice Concentration</h2>
+              <button
+                type="button"
+                className="dss-inline-help"
+                onClick={() => setShowMapLegend(!showMapLegend)}
+              >
+                {showMapLegend ? "Hide Key" : "Map Key"}
+              </button>
             </div>
             <div className="dss-colorbar-group">
               <div className="dss-colorbar-sic" />
               <div className="dss-colorbar-ticks">
-                <span>0% Open</span>
-                <span>15% Edge</span>
-                <span>40% Heavy</span>
-                <span>70% Limit</span>
-              </div>
-            </div>
-            <div className="dss-legend-lines">
-              <div>
-                <span className="line-swatch cyan" /> Optimal ship path + live flow chevrons
-              </div>
-              <div>
-                <span className="line-swatch amber" /> Dynamic course-correction vector (CC)
-              </div>
-              <div>
-                <span className="line-swatch dashed" /> Naive climatology path
-              </div>
-              <div>
-                <span className="line-swatch rose" /> Projected high-risk ice zone (≥40% SIC)
-              </div>
-              <div>
-                <span className="line-swatch sky-dashed" /> Predicted 15% ice-edge contour
+                <span>0%</span>
+                <span>15%</span>
+                <span>40%</span>
+                <span>70%</span>
               </div>
             </div>
           </section>
         </aside>
 
-        {/* Center Polar Map Viewport */}
+        {/* Center Polar Map Viewport (3D Interactive Polar Globe / Terrain + 2D Chart) */}
         <section className="dss-map-wrap">
-          {/* Top Telemetry Ribbon over Map */}
-          <div className="dss-telemetry-ribbon">
-            <div className="dss-telemetry-item">
-              <span className="dss-tel-key">FRAME</span>
-              <span className="dss-tel-val">{currentTimelineLabel}</span>
+          {/* Left Side Panel Hide/Show Handle */}
+          <button
+            type="button"
+            className={`dss-side-handle dss-side-handle-left ${
+              !leftPanelOpen ? "collapsed" : ""
+            }`}
+            onClick={() => setLeftPanelOpen(!leftPanelOpen)}
+            aria-label={leftPanelOpen ? "Hide left panel" : "Show left panel"}
+            title={leftPanelOpen ? "Hide left panel" : "Show left panel"}
+          >
+            <span className="dss-handle-chevron">
+              {leftPanelOpen ? "‹" : "›"}
+            </span>
+            <span className="dss-handle-text">
+              {leftPanelOpen ? "Hide" : "Layers"}
+            </span>
+          </button>
+
+          {/* Right Side Panel Hide/Show Handle */}
+          <button
+            type="button"
+            className={`dss-side-handle dss-side-handle-right ${
+              !rightPanelOpen ? "collapsed" : ""
+            }`}
+            onClick={() => setRightPanelOpen(!rightPanelOpen)}
+            aria-label={rightPanelOpen ? "Hide right panel" : "Show right panel"}
+            title={
+              rightPanelOpen
+                ? "Hide right panel"
+                : "Show right panel"
+            }
+          >
+            <span className="dss-handle-text">
+              {rightPanelOpen ? "Hide" : "Route"}
+            </span>
+            <span className="dss-handle-chevron">
+              {rightPanelOpen ? "›" : "‹"}
+            </span>
+          </button>
+
+          {/* Primary Map Control Panel: 3D Globe / 3D Sector / 2D Chart, Satellite/Terrain View, Search & Fullscreen Toggle */}
+          <div className="dss-map-control-bar">
+            {/* 1. 3D Globe / 3D Terrain / 2D Chart Toggle */}
+            <div className="dss-ctrl-group" role="group" aria-label="3D Globe or 2D Map Mode">
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${
+                  viewMode === "3d" && globeMode ? "active" : ""
+                }`}
+                onClick={() => {
+                  setViewMode("3d");
+                  setGlobeMode(true);
+                }}
+                title="Interactive 3D Polar Globe with Antarctic curvature & orbital context"
+              >
+                3D Globe
+              </button>
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${
+                  viewMode === "3d" && !globeMode ? "active" : ""
+                }`}
+                onClick={() => {
+                  setViewMode("3d");
+                  setGlobeMode(false);
+                }}
+                title="Planar 3D Sector DEM Terrain Block"
+              >
+                3D Terrain
+              </button>
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${viewMode === "2d" ? "active" : ""}`}
+                onClick={() => setViewMode("2d")}
+                title="2D EPSG:3412 South Polar Stereographic Chart"
+              >
+                2D Chart
+              </button>
             </div>
-            <div className="dss-telemetry-item">
-              <span className="dss-tel-key">VESSEL</span>
-              <span className="dss-tel-val">
-                {scenario?.ship?.name || "RV Polar Explorer"} · PC6 Limit 70% SIC
-              </span>
+
+            {/* 2. Satellite / Terrain DEM / Scientific View Selector */}
+            <div className="dss-ctrl-group" role="group" aria-label="Satellite or Terrain Imagery Mode">
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${
+                  basemapStyle === "satellite" ? "active" : ""
+                }`}
+                onClick={() => setBasemapStyle("satellite")}
+                title="Sentinel-2 / NASA MODIS & GIBS True-Color Satellite View"
+              >
+                Satellite
+              </button>
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${
+                  basemapStyle === "terrain" ? "active" : ""
+                }`}
+                onClick={() => setBasemapStyle("terrain")}
+                title="BedMachine v3 / REMA 3D Hypsometric Elevation & IBCSO Bathymetry"
+              >
+                Terrain DEM
+              </button>
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${
+                  basemapStyle === "scientific" ? "active" : ""
+                }`}
+                onClick={() => setBasemapStyle("scientific")}
+                title="High-Contrast Scientific NSIDC Sea-Ice Concentration Raster"
+              >
+                Scientific SIC
+              </button>
             </div>
-            <div className="dss-telemetry-item dss-telemetry-probe">
-              <span className="dss-tel-key">PROBE</span>
-              <span ref={probeTextRef} className="dss-tel-val">
-                Hover polar grid for coordinates &amp; local SIC
-              </span>
+
+            {/* 3. Location Search & Navigation Input */}
+            <div className="dss-search-wrap">
+              <input
+                type="text"
+                className="dss-search-input"
+                placeholder="Search station, mountain, shelf, berg or lat,lon..."
+                value={searchQuery}
+                onFocus={() => {
+                  if (!searchResults.length) {
+                    setSearchResults(
+                      scenario?.searchable_locations?.slice(0, 8) || []
+                    );
+                  }
+                  setShowSearchDropdown(true);
+                }}
+                onChange={(e) => {
+                  handleSearchInput(e.target.value);
+                  setShowSearchDropdown(true);
+                }}
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="dss-search-clear"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setSearchResults(
+                      scenario?.searchable_locations?.slice(0, 8) || []
+                    );
+                  }}
+                  aria-label="Clear search"
+                >
+                  ×
+                </button>
+              )}
+
+              {showSearchDropdown && searchResults.length > 0 && (
+                <div className="dss-search-dropdown">
+                  <div className="dss-search-drop-head">
+                    <span>ANTARCTIC GAZETTEER &amp; COORDINATE NAVIGATOR</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowSearchDropdown(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  {searchResults.map((item) => (
+                    <div key={item.id} className="dss-search-item">
+                      <div
+                        className="dss-search-item-main"
+                        onClick={() => {
+                          handleFocusMapCoord(item.x_m, item.y_m, true);
+                          setShowSearchDropdown(false);
+                        }}
+                      >
+                        <strong>{item.name}</strong>
+                        <span>
+                          {item.category} · {Math.abs(item.lat).toFixed(2)}°S,{" "}
+                          {Math.abs(item.lon).toFixed(2)}°
+                          {item.lon >= 0 ? "E" : "W"}
+                          {item.elevation_m
+                            ? ` · +${item.elevation_m}m`
+                            : ""}
+                        </span>
+                      </div>
+                      <div className="dss-search-item-actions">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleFocusMapCoord(item.x_m, item.y_m, true);
+                            setShowSearchDropdown(false);
+                          }}
+                        >
+                          Fly To
+                        </button>
+                        <button
+                          type="button"
+                          className="route-btn"
+                          onClick={() => {
+                            handleFocusMapCoord(item.x_m, item.y_m, false);
+                            handlePickDestinationPoint({
+                              lon: item.lon,
+                              lat: item.lat,
+                              x_m: item.x_m,
+                              y_m: item.y_m,
+                              custom_name: item.name,
+                              autoRoute: true,
+                            });
+                            setShowSearchDropdown(false);
+                          }}
+                        >
+                          Route Here
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 4. Quick Camera & Fullscreen Map Controls */}
+            <div className="dss-ctrl-group">
+              <button
+                type="button"
+                className="dss-ctrl-btn"
+                onClick={() => handleZoomToShip(true)}
+                title="Zoom to RV Polar Explorer"
+              >
+                Ship
+              </button>
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${showMapLegend ? "active" : ""}`}
+                onClick={() => setShowMapLegend(!showMapLegend)}
+                title="Toggle Map Legend"
+              >
+                Legend
+              </button>
+              <button
+                type="button"
+                className={`dss-ctrl-btn ${
+                  !leftPanelOpen && !rightPanelOpen ? "active" : ""
+                }`}
+                onClick={() => {
+                  if (leftPanelOpen || rightPanelOpen) {
+                    setLeftPanelOpen(false);
+                    setRightPanelOpen(false);
+                  } else {
+                    setLeftPanelOpen(true);
+                    setRightPanelOpen(true);
+                  }
+                }}
+                title="Hide or restore both side panels for fullscreen map view"
+              >
+                {!leftPanelOpen && !rightPanelOpen
+                  ? "Show Panels"
+                  : "Fullscreen"}
+              </button>
             </div>
           </div>
 
-          {/* Floating Real-World Sector Camera Presets & Ship Location Lock Bar */}
-          <div className="dss-map-camera-bar" role="group" aria-label="Chart Sector Presets">
-            <button
-              type="button"
-              onClick={() => handleFocusMapSector("full")}
-              title="Reset view to full Indian Ocean & East Antarctica Sector (10°W–100°E)"
-            >
-              Full Sector
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFocusMapSector("prydz")}
-              title="Focus on Cooperation Sea, Prydz Bay & Bharati Station Approach"
-            >
-              Prydz Bay &amp; Bharati
-            </button>
-            <button
-              type="button"
-              onClick={() => handleFocusMapSector("maitri")}
-              title="Focus on Cosmonaut Sea, Lazarev Sea & Maitri Station"
-            >
-              Maitri &amp; Maud Coast
-            </button>
-            <button
-              type="button"
-              className="dss-cam-btn-ship"
-              onClick={() => handleZoomToShip(true)}
-              title="Zoom closely to RV Polar Explorer's current coordinates on the chart"
-            >
-              Zoom to Ship
-            </button>
-            <button
-              type="button"
-              className={autoFollowShip ? "active" : ""}
-              onClick={() => {
-                const next = !autoFollowShip;
-                setAutoFollowShip(next);
-                if (next) handleZoomToShip(false);
-              }}
-              title="Keep map camera continuously locked onto RV Polar Explorer as it transits"
-            >
-              {autoFollowShip ? "Following Ship [ON]" : "Follow Ship"}
-            </button>
-            <button
-              type="button"
-              className={showShipBridge ? "active" : ""}
-              onClick={() => setShowShipBridge(!showShipBridge)}
-              title="Toggle Live Ship Bridge & 220 km Tactical Local Ice Radar Scope"
-            >
-              {showShipBridge ? "Hide Ship Radar" : "Show Ship Radar"}
-            </button>
-          </div>
+          {/* Active "Select Destination" Mode Banner */}
+          {isSelectingDestination && (
+            <div className="dss-dest-mode-banner">
+              <span>
+                Click anywhere on the map to place your destination pin.
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsSelectingDestination(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
 
-          <div ref={mapContainerRef} className="dss-map" />
+          {/* 3D Interactive Polar Globe & Satellite Map vs. 2D OpenLayers Polar Chart */}
+          {viewMode === "3d" && (
+            <Map3DView
+              ref={map3DRef}
+              scenario={scenario}
+              forecast={forecast}
+              activeSlice={activeSliceState || activeSliceRef.current}
+              elevationSlice={elevationGrid}
+              surfaceTypeSlice={surfaceTypeGrid}
+              timelineStep={timelineStep}
+              basemapStyle={basemapStyle}
+              globeMode={globeMode}
+              onToggleGlobeMode={() => setGlobeMode((g) => !g)}
+              verticalExaggeration={verticalExaggeration}
+              showIceContours={showIceContours}
+              showIceVectors={showIceVectors}
+              showRoutes={showRoutes}
+              showCourseCorrections={showCourseCorrections}
+              showIcebergs={showIcebergs}
+              showStations={showStations}
+              showGraticule={showGraticule}
+              showRoads={showRoads}
+              routeData={routeData}
+              icebergs={icebergs}
+              activeShipTelemetry={activeShipTelemetry}
+              selectedDestination={selectedDestination}
+              isSelectingDestination={isSelectingDestination}
+              onToggleSelectDestination={() =>
+                setIsSelectingDestination((s) => !s)
+              }
+              onSelectDestinationPoint={(pt) =>
+                handlePickDestinationPoint({ ...pt, autoRoute: true })
+              }
+              onClearDestination={handleClearDestination}
+              onInspectFeature={(info) => setSelectedTarget(info)}
+              probeTextRef={probeTextRef}
+            />
+          )}
+
+          <div
+            ref={mapContainerRef}
+            className="dss-map"
+            style={{
+              display: viewMode === "2d" ? "block" : "none",
+            }}
+          />
+
+          {/* 2D Chart On-Map Destination Controls when in 2D mode */}
+          {viewMode === "2d" && (
+            <div className="dss-map2d-dest-bar">
+              <button
+                type="button"
+                className={`dss-onmap-dest-btn ${
+                  isSelectingDestination ? "active" : ""
+                }`}
+                onClick={() => setIsSelectingDestination((s) => !s)}
+              >
+                {isSelectingDestination
+                  ? "Click Map to Place Pin..."
+                  : selectedDestination
+                  ? "Move Destination Pin"
+                  : "Choose Destination"}
+              </button>
+              {selectedDestination && (
+                <button type="button" onClick={handleClearDestination}>
+                  Clear Pin
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* "Choose Where I Want to Go" — Selected Destination Telemetry & Route Confirmation Card */}
+          {selectedDestination && (
+            <div className="dss-dest-card">
+              <div className="dss-dest-card-head">
+                <div>
+                  <span className="dss-dest-badge">
+                    SELECTED DESTINATION PIN{" "}
+                    {loadingDestInfo ? "(UPDATING...)" : ""}
+                  </span>
+                  <h3>
+                    {selectedDestination.custom_name ||
+                      selectedDestination.nearest_feature ||
+                      "Custom Polar Coordinates"}
+                  </h3>
+                  <p className="mono">
+                    Lat {Math.abs(selectedDestination.lat).toFixed(3)}°S, Lon{" "}
+                    {Math.abs(selectedDestination.lon).toFixed(3)}°
+                    {selectedDestination.lon >= 0 ? "E" : "W"} · Grid Cell (
+                    {selectedDestination.row}, {selectedDestination.col})
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearDestination}
+                  aria-label="Clear selected destination"
+                  title="Remove destination pin"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="dss-dest-grid">
+                <div>
+                  <span>SURFACE TYPE</span>
+                  <strong>{selectedDestination.surface_type}</strong>
+                </div>
+                <div>
+                  <span>ELEVATION / DEPTH</span>
+                  <strong className="mono">
+                    {selectedDestination.elevation_m >= 0 ? "+" : ""}
+                    {selectedDestination.elevation_m} m
+                  </strong>
+                </div>
+                <div>
+                  <span>LOCAL SEA ICE</span>
+                  <strong
+                    className={`mono ${
+                      selectedDestination.sic_pct >= 40
+                        ? "warn-text"
+                        : "cyan-text"
+                    }`}
+                  >
+                    {selectedDestination.is_land
+                      ? "Land / Shelf"
+                      : `${selectedDestination.sic_pct}% SIC`}
+                  </strong>
+                </div>
+                <div>
+                  <span>DISTANCE &amp; ETA</span>
+                  <strong className="mono">
+                    {selectedDestination.direct_distance_km} km (
+                    {selectedDestination.direct_distance_nm} NM) · ~
+                    {selectedDestination.estimated_transit_hours}h
+                  </strong>
+                </div>
+              </div>
+
+              {selectedDestination.is_land && (
+                <p className="dss-dest-note">
+                  Inland / Ice-Shelf target: A* routes ship to nearest navigable
+                  coastal anchorage ({Math.abs(selectedDestination.nav_lat).toFixed(
+                    2
+                  )}
+                  °S, {Math.abs(selectedDestination.nav_lon).toFixed(2)}°E) +
+                  overland traverse link.
+                </p>
+              )}
+
+              <div className="dss-dest-actions">
+                <button
+                  type="button"
+                  className="dss-btn-primary dss-dest-primary-btn"
+                  disabled={loadingRoute || loadingDestInfo}
+                  onClick={() =>
+                    handleActivateRouteToDestination(selectedDestination)
+                  }
+                >
+                  {loadingRoute
+                    ? "Computing Optimal A* Route..."
+                    : customDestination &&
+                      customDestination.row === selectedDestination.row &&
+                      customDestination.col === selectedDestination.col
+                    ? `Route Active (${
+                        fcMetrics?.distance_km ?? selectedDestination.direct_distance_km
+                      } km · ${fcMetrics?.hours ?? selectedDestination.estimated_transit_hours}h) — Focus`
+                    : "Use This Location (Route Ship Here)"}
+                </button>
+                <div className="dss-dest-sub-actions">
+                  <button
+                    type="button"
+                    className={`dss-btn-secondary ${
+                      isSelectingDestination ? "selecting" : ""
+                    }`}
+                    onClick={() =>
+                      setIsSelectingDestination(!isSelectingDestination)
+                    }
+                  >
+                    {isSelectingDestination ? "Click Map..." : "Move Pin"}
+                  </button>
+                  <button
+                    type="button"
+                    className="dss-btn-secondary"
+                    onClick={() =>
+                      handleFocusMapCoord(
+                        selectedDestination.x_m,
+                        selectedDestination.y_m,
+                        true
+                      )
+                    }
+                  >
+                    Zoom To Pin
+                  </button>
+                  <button
+                    type="button"
+                    className="dss-btn-secondary"
+                    onClick={handleClearDestination}
+                  >
+                    Clear Pin
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Understandable On-Map Visual Legend Card Explaining Every Surface, Feature & Route Element */}
+          {showMapLegend && (
+            <div className="dss-map-legend-overlay">
+              <div className="dss-ml-head">
+                <strong>3D / 2D POLAR MAP VISUAL LEGEND</strong>
+                <button
+                  type="button"
+                  onClick={() => setShowMapLegend(false)}
+                  aria-label="Close legend"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="dss-ml-cols">
+                <div className="dss-ml-col">
+                  <span className="dss-ml-sub">SURFACE &amp; TERRAIN</span>
+                  <div className="dss-ml-item">
+                    <span className="swatch-box ocean" /> Southern Ocean &amp; Bathymetry
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-box marginal-ice" /> Marginal Sea Ice (15–40% SIC)
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-box pack-ice" /> Heavy Pack Ice Ridge (≥40% SIC)
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-box shelf" /> Floating Glacial Ice Shelf
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-box rock" /> Coastal Bedrock Oasis (Land)
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-box mountain" /> 3D Mountains &amp; Ice Plateau
+                  </div>
+                </div>
+                <div className="dss-ml-col">
+                  <span className="dss-ml-sub">NAVIGATION &amp; MARKERS</span>
+                  <div className="dss-ml-item">
+                    <span className="swatch-dot ship" /> RV Polar Explorer (Live Ship)
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-line optimal" /> Optimal A* Path + Flow Chevrons
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-line cc" /> Course Correction (CC) &amp; Hazard
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-dot station" /> Research Station (Bharati, Maitri)
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-dot berg" /> 3D Tabular Iceberg + 7d Cone
+                  </div>
+                  <div className="dss-ml-item">
+                    <span className="swatch-dot dest" /> Selected Destination Pin + Road
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Live Ship Location & Tactical Local Ice Radar HUD */}
           {showShipBridge && activeShipTelemetry && (
@@ -2828,83 +3614,114 @@ export default function App() {
               </div>
             </div>
           )}
-
-          {scenario?.gate && (
-            <div className="dss-map-hud-bottom">
-              <span
-                className="dss-status-dot"
-                data-status={scenario.gate.passed ? "nominal" : "warning"}
-              />
-              <span className="dss-status-tag">
-                {scenario.gate.passed ? "VALIDATION GATE NOMINAL" : "FALLBACK"}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                Click any station, berg, waypoint, or ship on chart to inspect
-              </span>
-            </div>
-          )}
         </section>
 
         {/* Right Telemetry & Routing Evaluation Column */}
-        <aside className="dss-sidebar dss-right">
-          <section className="dss-panel">
-            <div className="dss-panel-head">
-              <h2>01. Route Planner Parameters</h2>
-              <button
-                type="button"
-                className="dss-inline-help"
-                onClick={() => {
-                  setGuideTab("routing");
-                  setDrawer("guide");
-                }}
-              >
-                How A* works
-              </button>
-            </div>
-            <p className="dss-meta-line">
-              <span>Time-Dependent 8-Neighbor A*</span>
-              <span aria-hidden="true">·</span>
-              <span>25 km Grid</span>
-            </p>
+        <aside
+          className={`dss-sidebar dss-right ${
+            !rightPanelOpen ? "is-collapsed" : ""
+          }`}
+          aria-hidden={!rightPanelOpen}
+        >
+          <div className="dss-sidebar-top">
+            <span>Route Planner</span>
+            <button
+              type="button"
+              className="dss-hide-panel-btn"
+              onClick={() => setRightPanelOpen(false)}
+              title="Hide right panel to expand map"
+            >
+              Hide Panel ›
+            </button>
+          </div>
 
+          <section className="dss-panel">
             <label className="dss-field">
-              <span>Voyage Sector</span>
+              <span>Active Route Destination</span>
               <select
                 value={leg}
                 onChange={(e) => {
                   setShipPos(null);
+                  setCustomDestination(null);
+                  setSelectedDestination(null);
                   setLeg(e.target.value);
                 }}
               >
-                <option value="ice_entry->bharati">
-                  Ice Entry (56°S, 52.5°E) → Bharati Station
-                </option>
                 <option value="bharati->maitri">
-                  Bharati Station → Maitri Station
+                  Bharati Station to Maitri Station
+                </option>
+                <option value="ice_entry->bharati">
+                  Ice Entry (56°S, 52.5°E) to Bharati Station
                 </option>
                 <option value="ice_entry->maitri">
-                  Ice Entry (56°S, 52.5°E) → Maitri Station
+                  Ice Entry (56°S, 52.5°E) to Maitri Station
                 </option>
               </select>
             </label>
 
-            <label className="dss-field">
-              <span>Planning Forecast Field</span>
-              <select
-                value={forecastSource}
-                onChange={(e) => setForecastSource(e.target.value)}
-              >
-                <option value="auto">Auto (Validation Gate Winner: U-Net)</option>
-                <option value="unet">Polar U-Net (7-Day Residual Forecast)</option>
-                <option value="b1">Seasonal Tendency Baseline (B1)</option>
-                <option value="clim">Static Historical Climatology</option>
-              </select>
-            </label>
+            {/* On-Map Custom Destination Controls */}
+            <div className="dss-dest-planner-box">
+              {customDestination ? (
+                <div className="dss-dest-active-pill">
+                  <div>
+                    <span className="dss-dest-pill-tag">CUSTOM DESTINATION</span>
+                    <strong>
+                      {customDestination.custom_name ||
+                        customDestination.nearest_feature}
+                    </strong>
+                    <span className="mono">
+                      {Math.abs(customDestination.lat).toFixed(2)}°S,{" "}
+                      {Math.abs(customDestination.lon).toFixed(2)}°
+                      {customDestination.lon >= 0 ? "E" : "W"}
+                    </span>
+                  </div>
+                  <div className="dss-dest-pill-btns">
+                    <button
+                      type="button"
+                      className={isSelectingDestination ? "active" : ""}
+                      onClick={() =>
+                        setIsSelectingDestination(!isSelectingDestination)
+                      }
+                    >
+                      {isSelectingDestination ? "Click Map..." : "Move Pin"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleFocusMapCoord(
+                          customDestination.x_m,
+                          customDestination.y_m,
+                          true
+                        )
+                      }
+                    >
+                      Zoom
+                    </button>
+                    <button type="button" onClick={handleClearDestination}>
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className={`dss-btn-secondary dss-btn-full ${
+                    isSelectingDestination ? "selecting" : ""
+                  }`}
+                  onClick={() =>
+                    setIsSelectingDestination(!isSelectingDestination)
+                  }
+                >
+                  {isSelectingDestination
+                    ? "Click anywhere on Map..."
+                    : "Choose Destination on Map"}
+                </button>
+              )}
+            </div>
 
             <div className="dss-slider-block">
               <div className="dss-slider-title">
-                <span>Ice-Risk Penalty Weight (λ)</span>
+                <span>Ice-Risk Weight (λ)</span>
                 <strong className="mono">{wRisk.toFixed(2)}</strong>
               </div>
               <input
@@ -2914,21 +3731,6 @@ export default function App() {
                 step={0.05}
                 value={wRisk}
                 onChange={(e) => setWRisk(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="dss-slider-block">
-              <div className="dss-slider-title">
-                <span>Transit Time Priority Weight</span>
-                <strong className="mono">{wTime.toFixed(2)}</strong>
-              </div>
-              <input
-                type="range"
-                min={0.5}
-                max={2.0}
-                step={0.1}
-                value={wTime}
-                onChange={(e) => setWTime(Number(e.target.value))}
               />
             </div>
 
@@ -2951,28 +3753,19 @@ export default function App() {
                 </button>
               )}
             </div>
-            {shipPos && (
-              <p className="dss-pos-note">
-                Vessel position: cell ({shipPos.row}, {shipPos.col}) · Replanned
-                from updated daily satellite observation.
-              </p>
-            )}
           </section>
 
-          {/* Counterfactual Evaluation Scored on Real Observed Ice */}
-          <section className="dss-panel">
+          {/* Compact Route Metrics Summary */}
+          <section className="dss-panel dss-panel-last">
             <div className="dss-panel-head">
-              <h2>02. Counterfactual Evaluation</h2>
+              <h2>Route Summary</h2>
             </div>
-            <p className="dss-meta-line">
-              <span>Both routes scored post-hoc on observed NSIDC SIC</span>
-            </p>
 
             {fcMetrics?.ok && stMetrics?.ok ? (
               <>
                 <div className="dss-metric-grid dss-metric-highlight">
                   <div className="dss-metric-cell">
-                    <span className="dss-metric-label">Heavy-Ice Exposure Saved</span>
+                    <span className="dss-metric-label">Heavy-Ice Saved</span>
                     <div
                       className={`dss-metric-val ${
                         stMetrics.heavy_ice_hours - fcMetrics.heavy_ice_hours >= 0
@@ -2990,7 +3783,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="dss-metric-cell">
-                    <span className="dss-metric-label">Transit Duration Delta</span>
+                    <span className="dss-metric-label">Time Saved</span>
                     <div
                       className={`dss-metric-val ${
                         stMetrics.hours - fcMetrics.hours >= 0 ? "pos" : "neg"
@@ -3006,203 +3799,32 @@ export default function App() {
                 <div className="dss-route-comparison-table">
                   <div className="dss-rc-header">
                     <span>Metric</span>
-                    <span className="cyan-text">Forecast A*</span>
-                    <span className="muted-text">Climatology</span>
+                    <span className="cyan-text">Optimal A*</span>
+                    <span className="muted-text">Baseline</span>
                   </div>
                   <div className="dss-rc-row">
-                    <span>Transit Duration</span>
+                    <span>Duration</span>
                     <strong className="mono">{fcMetrics.hours} h</strong>
                     <span className="mono">{stMetrics.hours} h</span>
                   </div>
                   <div className="dss-rc-row">
-                    <span>Track Distance</span>
+                    <span>Distance</span>
                     <strong className="mono">{fcMetrics.distance_km} km</strong>
                     <span className="mono">{stMetrics.distance_km} km</span>
                   </div>
                   <div className="dss-rc-row">
-                    <span>Heavy Ice (≥40% SIC)</span>
+                    <span>Heavy Ice</span>
                     <strong className="mono accent">
                       {fcMetrics.heavy_ice_hours} h
                     </strong>
                     <span className="mono">{stMetrics.heavy_ice_hours} h</span>
                   </div>
-                  <div className="dss-rc-row">
-                    <span>Fuel Resistance Proxy</span>
-                    <strong className="mono">{fcMetrics.fuel_proxy}</strong>
-                    <span className="mono">{stMetrics.fuel_proxy}</span>
-                  </div>
-                  <div className="dss-rc-row">
-                    <span>Peak / Mean SIC</span>
-                    <strong className="mono">
-                      {Math.round(fcMetrics.max_sic * 100)}% /{" "}
-                      {Math.round(fcMetrics.mean_sic * 100)}%
-                    </strong>
-                    <span className="mono">
-                      {Math.round(stMetrics.max_sic * 100)}% /{" "}
-                      {Math.round(stMetrics.mean_sic * 100)}%
-                    </span>
-                  </div>
                 </div>
               </>
             ) : (
-              <p className="dss-meta-line">Computing route metrics...</p>
+              <p className="dss-meta-line">Computing route...</p>
             )}
           </section>
-
-          {/* 03. Dynamic Course Corrections & Ship Avoidance Waypoints Log */}
-          {(routeData?.course_corrections?.length > 0 ||
-            fcMetrics?.waypoints?.length > 0) && (
-            <section className="dss-panel">
-              <div className="dss-panel-head">
-                <h2>03. Dynamic Course Corrections</h2>
-              </div>
-              <p className="dss-meta-line">
-                <span>
-                  Real-time maneuvers circumventing projected ≥40% ice &amp; bergs
-                </span>
-              </p>
-
-              {routeData?.course_corrections?.length > 0 && (
-                <div className="dss-cc-list">
-                  {routeData.course_corrections.map((cc) => (
-                    <div
-                      key={cc.id}
-                      className="dss-cc-card"
-                      onClick={() => {
-                        setShipStepIdx(cc.step_index);
-                        if (mapRef.current) {
-                          mapRef.current.getView().animate({
-                            center: [cc.fc_x_m, cc.fc_y_m],
-                            zoom: 4.1,
-                            duration: 380,
-                          });
-                        }
-                        setSelectedTarget({
-                          kind: "Dynamic Course Correction Maneuver",
-                          title: `${cc.id}: ${cc.maneuver}`,
-                          subtitle: `${Math.abs(cc.lat).toFixed(2)}°S, ${Math.abs(
-                            cc.lon
-                          ).toFixed(2)}°E · Voyage T+${cc.hour}h`,
-                          metrics: [
-                            {
-                              label: "Hazard Circumvented",
-                              value: `${cc.reason} (+${cc.deviation_km} km offset)`,
-                            },
-                            {
-                              label: "Local Ice Risk Reduction",
-                              value: `${Math.round(cc.st_sic * 100)}% → ${Math.round(
-                                cc.fc_sic * 100
-                              )}% SIC (-${cc.sic_reduction_pct}%)`,
-                            },
-                            {
-                              label: "New Optimal Heading",
-                              value: `COG ${cc.cog_deg}° True`,
-                            },
-                          ],
-                        });
-                      }}
-                    >
-                      <div className="dss-cc-top">
-                        <span className="dss-cc-badge">{cc.id}</span>
-                        <strong className="dss-cc-maneuver">
-                          {cc.maneuver}
-                        </strong>
-                        <span className="dss-cc-delta mono">
-                          -{cc.sic_reduction_pct}% SIC
-                        </span>
-                      </div>
-                      <div className="dss-cc-sub">
-                        <span>{cc.reason}</span>
-                        <span className="mono">
-                          T+{cc.hour}h · COG {cc.cog_deg}°
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {fcMetrics?.waypoints?.length > 0 && (
-                <div className="dss-wp-list">
-                  {fcMetrics.waypoints.map((wp) => (
-                    <div
-                      key={wp.code}
-                      className="dss-wp-row"
-                      onClick={() => {
-                        if (mapRef.current) {
-                          mapRef.current
-                            .getView()
-                            .animate({ center: [wp.x_m, wp.y_m], duration: 300 });
-                        }
-                      }}
-                    >
-                      <div className="dss-wp-main">
-                        <strong>{wp.label}</strong>
-                        <span className="mono">
-                          {Math.abs(wp.lat).toFixed(1)}°S,{" "}
-                          {Math.abs(wp.lon).toFixed(1)}°E · COG {wp.cog_deg}°
-                        </span>
-                      </div>
-                      <div className="dss-wp-right mono">
-                        <span>T+{Math.round(wp.hour)}h</span>
-                        <small>{Math.round(wp.sic * 100)}% SIC</small>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
-          {scenario?.hindcast_summary && (
-            <section className="dss-panel dss-panel-last">
-              <div className="dss-panel-head">
-                <h2>04. Multi-Date Hindcast Benchmark</h2>
-                <button
-                  type="button"
-                  className="dss-inline-help"
-                  onClick={() => setDrawer("hindcast")}
-                >
-                  Full table
-                </button>
-              </div>
-              <p className="dss-meta-line">
-                <span>{scenario.hindcast_summary.n} Departures</span>
-                <span aria-hidden="true">·</span>
-                <span>Ice Entry → Bharati</span>
-              </p>
-              <div className="dss-metric-grid">
-                <div className="dss-metric-cell">
-                  <span className="dss-metric-label">Mean Heavy Ice (U-Net)</span>
-                  <div className="dss-metric-val">
-                    {scenario.hindcast_summary.mean_heavy_hours_forecast}
-                    <small>h</small>
-                  </div>
-                </div>
-                <div className="dss-metric-cell">
-                  <span className="dss-metric-label">Mean Heavy Ice (Static)</span>
-                  <div className="dss-metric-val">
-                    {scenario.hindcast_summary.mean_heavy_hours_static}
-                    <small>h</small>
-                  </div>
-                </div>
-                <div className="dss-metric-cell">
-                  <span className="dss-metric-label">Mean Heavy-Ice Saved</span>
-                  <div className="dss-metric-val pos">
-                    +{scenario.hindcast_summary.mean_heavy_hours_saved}
-                    <small>h</small>
-                  </div>
-                </div>
-                <div className="dss-metric-cell">
-                  <span className="dss-metric-label">Mean Transit Saved</span>
-                  <div className="dss-metric-val pos">
-                    +{scenario.hindcast_summary.mean_hours_saved}
-                    <small>h</small>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
         </aside>
       </main>
 
@@ -4241,5 +4863,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </>
   );
 }

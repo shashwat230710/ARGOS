@@ -4,187 +4,67 @@ import fs from "fs";
 import proj4 from "proj4";
 import { PolarUNet } from "./polarUnet.js";
 
+const DATASETS_DIR = path.resolve(process.cwd(), "datasets");
+
+function loadJsonDataset<T>(filename: string): T {
+  const fullPath = path.join(DATASETS_DIR, filename);
+  return JSON.parse(fs.readFileSync(fullPath, "utf-8")) as T;
+}
+
+const sicConfigData = loadJsonDataset<any>("nsidc_g02202_sic_config.json");
+const stationsDataset = loadJsonDataset<any>("stations_and_waypoints.json");
+const geographyDemDataset = loadJsonDataset<any>("antarctic_geography_dem.json");
+const icebergsDataset = loadJsonDataset<any>("tabular_icebergs_usnic.json");
+const satelliteCatalogDataset = loadJsonDataset<any>("satellite_catalog.json");
+
 const PORT = 3000;
 const EPSG_3412 =
+  sicConfigData.proj4_def ||
   "+proj=stere +lat_0=-90 +lat_ts=-70 +lon_0=0 +x_0=0 +y_0=0 +a=6378273 +b=6356889.449 +units=m +no_defs";
 
 proj4.defs("EPSG:3412", EPSG_3412);
 
-const DATASET_NAME =
-  "NOAA/NSIDC Climate Data Record of Passive Microwave Sea Ice Concentration, Version 6 (G02202)";
-const DATASET_DOI = "https://doi.org/10.7265/b18j-z797";
-const DEMO_D0 = "2023-01-10";
-const SHIP_NAME = "RV Polar Explorer";
-const SHIP_CLASS = "PC6 Ice-Strengthened Research Vessel";
-const OPEN_WATER_KMH = 22.0;
-const MAX_SIC = 0.7;
-const HEAVY_ICE_SIC = 0.4;
-const CELL_M = 25000.0;
-const CELL_KM = 25.0;
+const DATASET_NAME = sicConfigData.dataset_name;
+const DATASET_DOI = sicConfigData.dataset_doi;
+const DEMO_D0 = sicConfigData.demo_d0 || "2023-01-10";
+const SHIP_NAME = sicConfigData.ship?.name || "RV Polar Explorer";
+const SHIP_CLASS =
+  sicConfigData.ship?.class || "PC6 Ice-Strengthened Research Vessel";
+const OPEN_WATER_KMH = sicConfigData.ship?.open_water_kmh || 22.0;
+const MAX_SIC = sicConfigData.ship?.max_sic || 0.7;
+const HEAVY_ICE_SIC = sicConfigData.ship?.heavy_ice_sic || 0.4;
+const CELL_M = sicConfigData.cell_m || 25000.0;
+const CELL_KM = sicConfigData.cell_km || 25.0;
 const CELL_KM2 = CELL_KM * CELL_KM;
-const CROP_H = 160;
-const CROP_W = 184;
-const T_IN = 7;
-const K_OUT = 7;
+const CROP_H = sicConfigData.crop_h || 160;
+const CROP_W = sicConfigData.crop_w || 184;
+const T_IN = sicConfigData.t_in || 7;
+const K_OUT = sicConfigData.k_out || 7;
 
-// Real-world coordinates [lon, lat] for primary routing waypoints & East Antarctic stations
+// Real-world coordinates [lon, lat] for primary routing waypoints & East Antarctic stations (loaded from /datasets/stations_and_waypoints.json)
 const WAYPOINTS: Record<
   string,
-  { lon: number; lat: number; name: string; country: string; role: string }
-> = {
-  cape_town: {
-    lon: 18.4241,
-    lat: -33.9249,
-    name: "Cape Town",
-    country: "South Africa",
-    role: "Expedition staging port",
-  },
-  ice_entry: {
-    lon: 52.5,
-    lat: -56.0,
-    name: "56°S Pack-Ice Entry Gate",
-    country: "Southern Ocean",
-    role: "Indian Ocean sector entry waypoint",
-  },
-  bharati: {
-    lon: 76.195,
-    lat: -69.4067,
-    name: "Bharati Station",
-    country: "India (NCPOR)",
-    role: "Primary resupply destination (Larsemann Hills, Prydz Bay)",
-  },
-  maitri: {
-    lon: 11.7333,
-    lat: -70.7667,
-    name: "Maitri Station",
-    country: "India (NCPOR)",
-    role: "Secondary resupply destination (Schirmacher Oasis)",
-  },
-  mawson: {
-    lon: 62.8742,
-    lat: -67.6028,
-    name: "Mawson Station",
-    country: "Australia (AAD)",
-    role: "Reference coastal station (Holme Bay)",
-  },
-  davis: {
-    lon: 77.9675,
-    lat: -68.5767,
-    name: "Davis Station",
-    country: "Australia (AAD)",
-    role: "Reference coastal station (Vestfold Hills)",
-  },
-  syowa: {
-    lon: 39.5836,
-    lat: -69.0044,
-    name: "Syowa Station",
-    country: "Japan (NIPR)",
-    role: "Reference coastal station (Lützow-Holm Bay)",
-  },
-};
+  {
+    lon: number;
+    lat: number;
+    elevation_m?: number;
+    name: string;
+    country: string;
+    agency?: string;
+    role: string;
+    kind?: string;
+  }
+> = stationsDataset.waypoints;
 
-// Real-world geographic landmarks & seas in the East Antarctic / Indian Ocean sector
-const GEOGRAPHIC_LANDMARKS = [
-  { name: "SOUTHERN OCEAN\n(INDIAN SECTOR)", lon: 42.0, lat: -57.5, kind: "ocean" },
-  { name: "COSMONAUT SEA", lon: 41.0, lat: -64.8, kind: "sea" },
-  { name: "COOPERATION SEA", lon: 66.0, lat: -64.2, kind: "sea" },
-  { name: "PRYDZ BAY", lon: 74.5, lat: -67.8, kind: "sea" },
-  { name: "DAVIS SEA", lon: 89.5, lat: -65.2, kind: "sea" },
-  { name: "LAZAREV SEA", lon: 8.0, lat: -66.8, kind: "sea" },
-  { name: "DRONNING MAUD LAND", lon: 18.0, lat: -72.8, kind: "land" },
-  { name: "ENDERBY LAND", lon: 50.5, lat: -68.8, kind: "land" },
-  { name: "MAC. ROBERTSON LAND", lon: 64.0, lat: -70.5, kind: "land" },
-  { name: "AMERY ICE SHELF", lon: 71.5, lat: -70.4, kind: "shelf" },
-  { name: "PRINCESS ELIZABETH LAND", lon: 83.5, lat: -69.8, kind: "land" },
-];
+const ROADS_AND_TRAVERSES: any[] = stationsDataset.roads_and_traverses || [];
 
-// Free & Best-Suitable Satellite Datasets Catalog for Small Polar ML Models
-const SATELLITE_DATASETS = [
-  {
-    id: "nsidc-g02202-v6",
-    role: "Primary Target & Input (Used in Demo)",
-    name: "NOAA/NSIDC Climate Data Record of Passive Microwave Sea Ice Concentration, V6 (G02202)",
-    agency: "NOAA / NSIDC",
-    resolution: "25 km × 25 km · Daily · EPSG:3412",
-    coverage: "1978–Present (Antarctic South Polar Grid, 332×316)",
-    variables: ["cdr_seaice_conc", "stdev_of_cdr_seaice_conc", "qa_of_cdr_seaice_conc"],
-    access: "Free, direct HTTPS (no registration required)",
-    url: "https://noaadata.apps.nsidc.org/NOAA/G02202_V6/south/daily/",
-    doi: "https://doi.org/10.7265/b18j-z797",
-    whyBest:
-      "Gold-standard climate record with zero gaps across clouds/polar night, small file size (~150 KB/day NetCDF), ideal for training compact 2-level U-Nets on CPU/laptop.",
-  },
-  {
-    id: "amsr2-asi-bremen",
-    role: "High-Resolution Operational Sea Ice (Coastal Leads)",
-    name: "AMSR2 ASI (ARTIST Sea Ice) Passive Microwave 89 GHz Daily Grids",
-    agency: "University of Bremen / JAXA",
-    resolution: "6.25 km & 3.125 km · Daily · EPSG:3412",
-    coverage: "2012–Present (Antarctic & Regional Sectors)",
-    variables: ["z (Sea Ice Concentration 0–100%)"],
-    access: "Free, open HTTPS archive (NetCDF & GeoTIFF)",
-    url: "https://data.seaice.uni-bremen.de/amsr2/asi_daygrid_swath/s6250/",
-    doi: "https://doi.org/10.1029/2005JC003384",
-    whyBest:
-      "4× finer spatial resolution than SSMIS/CDR; resolves narrow coastal polynyas and fast-ice channels on the approach to Bharati (Prydz Bay) and Maitri.",
-  },
-  {
-    id: "ecmwf-era5-single",
-    role: "Atmospheric Forcing Covariates (Wind Drift & Melt)",
-    name: "ECMWF ERA5 Reanalysis on Single Levels (10m Wind & 2m Temp)",
-    agency: "Copernicus C3S / ECMWF / Google Cloud ARCO-ERA5",
-    resolution: "0.25° (~25 km) · Hourly / Daily · NetCDF / Zarr",
-    coverage: "1940–Present",
-    variables: ["u10 (10m Eastward Wind)", "v10 (10m Northward Wind)", "t2m (2m Air Temp)", "msl (Sea Level Pressure)"],
-    access: "Free via Copernicus CDS API or AWS/GCP Public Zarr (`gs://gcp-public-data-arco-era5`)",
-    url: "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels",
-    doi: "https://doi.org/10.24381/cds.adbb2d47",
-    whyBest:
-      "Adding `u10/v10` wind channels to the U-Net input tensor provides the strongest physical predictor for 3–7 day wind-driven sea-ice advection and polynya opening.",
-  },
-  {
-    id: "cmems-seaice-velocity",
-    role: "Satellite Sea-Ice Drift Vectors & Ocean Currents",
-    name: "OSI SAF / Copernicus Global Ocean & Sea Ice Drift (OSI-405-c / GLORYS12)",
-    agency: "EUMETSAT OSI SAF & Copernicus Marine (CMEMS)",
-    resolution: "62.5 km (Ice Drift) / 1/12° (Ocean Currents) · Daily",
-    coverage: "2013–Present",
-    variables: ["dX, dY (48h Ice Motion Vectors)", "uo, vo (Surface Geostrophic/Ekman Current)"],
-    access: "Free via Copernicus Marine Toolbox (`copernicusmarine`) & OSI SAF FTP/HTTPS",
-    url: "https://osi-saf.eumetsat.int/products/osi-405-c",
-    doi: "https://doi.org/10.48670/moi-00016",
-    whyBest:
-      "Directly supplies observed ice motion vectors and Antarctic Coastal Current velocity for both U-Net advection channels and physical iceberg drift cones.",
-  },
-  {
-    id: "usnic-byu-icebergs",
-    role: "Iceberg Positions & Scatterometer Trajectories",
-    name: "US National Ice Center (USNIC) & BYU SCP Antarctic Iceberg Database",
-    agency: "USNIC / Brigham Young University Microwave Earth Remote Sensing",
-    resolution: "Tabular Bergs (≥10 NM) & Small Bergs (Sentinel-1 SAR via CMEMS)",
-    coverage: "1978–Present (Weekly/Daily CSV & Shapefiles)",
-    variables: ["Berg ID", "Latitude", "Longitude", "Length/Width NM", "Scatterometer Track"],
-    access: "Free public CSV/Shapefile download",
-    url: "https://www.scp.byu.edu/data/iceberg/",
-    doi: "https://usicecenter.gov/Products/AntarcticIcebergs",
-    whyBest:
-      "Provides real historical and live positions of Southern Ocean tabular icebergs (A-, B-, C-, D-quadrants) to initialize the 7-day drift + uncertainty cone module.",
-  },
-  {
-    id: "bedmachine-ibcso",
-    role: "Land, Grounded Ice-Shelf & Bathymetry Mask",
-    name: "MEaSUREs BedMachine Antarctica v3 (NSIDC-0756) & IBCSO v2",
-    agency: "NASA MEaSUREs / NSIDC / AWI",
-    resolution: "500 m regridded to 25 km EPSG:3412",
-    coverage: "Antarctic Continent, Ice Shelves & Southern Ocean",
-    variables: ["mask (0=Ocean, 1=Ice-free land, 2=Grounded ice, 3=Floating ice shelf)", "bed (Bathymetry)"],
-    access: "Free via NSIDC & IBCSO",
-    url: "https://nsidc.org/data/nsidc-0756/versions/3",
-    doi: "https://doi.org/10.5067/FPSU0V1MWUB6",
-    whyBest:
-      "Defines accurate grounding lines and floating ice fronts (Amery Ice Shelf near Bharati, Lazarev Ice Shelf near Maitri) so A* never routes across ice shelves.",
-  },
-];
+// Real-world geographic landmarks, mountains & ice shelves (loaded from /datasets/antarctic_geography_dem.json)
+const GEOGRAPHIC_LANDMARKS: any[] = geographyDemDataset.landmarks || [];
+const MOUNTAIN_PEAKS: any[] = geographyDemDataset.mountains || [];
+const ICE_SHELVES_DATA: any[] = geographyDemDataset.ice_shelves || [];
+
+// Free & Best-Suitable Satellite Datasets Catalog (loaded from /datasets/satellite_catalog.json)
+const SATELLITE_DATASETS: any[] = satelliteCatalogDataset.datasets || [];
 
 function lonlatToXy(lon: number, lat: number): [number, number] {
   const [x, y] = proj4("EPSG:4326", "EPSG:3412", [lon, lat]);
@@ -366,11 +246,46 @@ function initGridAndData() {
     return { ...lm, x_m: xm, y_m: ym };
   });
 
-  // Compute lon/lat per cell and East Antarctic coastline mask
+  const mountains = MOUNTAIN_PEAKS.map((mt) => {
+    const [xm, ym] = lonlatToXy(mt.lon, mt.lat);
+    return { ...mt, x_m: xm, y_m: ym };
+  });
+
+  const roadsAndTraverses = ROADS_AND_TRAVERSES.map((rt) => ({
+    ...rt,
+    xy: (rt.coordinates || []).map(([lon, lat]: [number, number]) =>
+      lonlatToXy(lon, lat)
+    ),
+  }));
+
+  // Compute lon/lat per cell, East Antarctic coastline mask, 3D DEM elevation (m) & surface type
+  // surfaceType: 0 = Ocean, 1 = Exposed Coastal Bedrock Oasis, 2 = Grounded Ice Sheet / Mountain, 3 = Floating Ice Shelf
   const cellLon = new Float32Array(CROP_H * CROP_W);
   const cellLat = new Float32Array(CROP_H * CROP_W);
   const land = new Uint8Array(CROP_H * CROP_W);
   const ocean = new Float32Array(CROP_H * CROP_W);
+  const elevation = new Float32Array(CROP_H * CROP_W);
+  const surfaceType = new Float32Array(CROP_H * CROP_W);
+
+  function isInsideShelf(lon: number, lat: number): { hit: boolean; freeboard: number } {
+    // Amery Ice Shelf
+    if (lon >= 67.8 && lon <= 74.2 && lat <= -68.6 && lat >= -71.8) {
+      return { hit: true, freeboard: 65 };
+    }
+    // Lazarev Ice Shelf
+    if (lon >= 12.2 && lon <= 15.8 && lat <= -69.5 && lat >= -70.6) {
+      return { hit: true, freeboard: 48 };
+    }
+    // West Ice Shelf
+    if (lon >= 81.2 && lon <= 87.8 && lat <= -66.4 && lat >= -67.8) {
+      return { hit: true, freeboard: 55 };
+    }
+    // Fimbul Ice Shelf
+    if (lon >= -2.2 && lon <= 4.5 && lat <= -69.4 && lat >= -70.8) {
+      return { hit: true, freeboard: 50 };
+    }
+    return { hit: false, freeboard: 0 };
+  }
 
   for (let r = 0; r < CROP_H; r++) {
     for (let c = 0; c < CROP_W; c++) {
@@ -379,12 +294,46 @@ function initGridAndData() {
       cellLon[idx] = lon;
       cellLat[idx] = lat;
       const clat = coastLatAtLon(lon);
-      if (lat <= clat) {
+      const shelfCheck = isInsideShelf(lon, lat);
+
+      if (shelfCheck.hit) {
         land[idx] = 1;
         ocean[idx] = 0.0;
+        surfaceType[idx] = 3; // Floating Ice Shelf
+        elevation[idx] = shelfCheck.freeboard;
+      } else if (lat <= clat) {
+        land[idx] = 1;
+        ocean[idx] = 0.0;
+        const inlandDeg = Math.max(0, clat - lat);
+        // Parabolic polar ice-sheet dome profile rising inland toward 2,800m
+        let elev = 120 + 1550 * Math.pow(Math.min(1, inlandDeg / 8.5), 0.62);
+        // Add real mountain range peaks from /datasets/antarctic_geography_dem.json
+        for (const mt of MOUNTAIN_PEAKS) {
+          const dLon = (lon - mt.lon) / (mt.radius_lon || 4.5);
+          const dLat = (lat - mt.lat) / (mt.radius_lat || 1.4);
+          const dist2 = dLon * dLon + dLat * dLat;
+          if (dist2 < 6.0) {
+            elev += (mt.peak_m - 950) * Math.exp(-dist2);
+          }
+        }
+        elevation[idx] = Math.min(3450, Math.round(elev));
+        // Exposed coastal rock oases within 0.45 deg of coastline near oasis sectors
+        const isOasis =
+          inlandDeg < 0.48 &&
+          ((lon >= 75.2 && lon <= 78.8) ||
+            (lon >= 10.8 && lon <= 13.2) ||
+            (lon >= 61.8 && lon <= 63.8) ||
+            (lon >= 38.8 && lon <= 40.4));
+        surfaceType[idx] = isOasis ? 1 : 2;
       } else {
         land[idx] = 0;
         ocean[idx] = 1.0;
+        surfaceType[idx] = 0; // Ocean
+        const offshoreDeg = Math.max(0, lat - clat);
+        // Continental shelf (-250m to -700m) dropping across shelf break into abyssal plain (-3800m)
+        const shelfSlope = 1 / (1 + Math.exp(-(offshoreDeg - 2.1) * 1.8));
+        const bathy = -220 - 3450 * shelfSlope + 180 * Math.sin((lon * Math.PI) / 18);
+        elevation[idx] = Math.round(bathy);
       }
     }
   }
@@ -588,10 +537,14 @@ function initGridAndData() {
     shape: [CROP_H, CROP_W],
     stations,
     landmarks,
+    mountains,
+    roadsAndTraverses,
     cellLon,
     cellLat,
     land,
     ocean,
+    elevation,
+    surfaceType,
     dates,
     availableD0,
     sicByDate,
@@ -604,69 +557,8 @@ function initGridAndData() {
 const DATA = initGridAndData();
 const unet = new PolarUNet(CROP_H, CROP_W);
 
-// Real-World Named Tabular Icebergs (USNIC / BYU Scatterometer Tracked Bergs in Indian Sector)
-const SEEDS = [
-  {
-    id: "D-28",
-    name: "Tabular Berg D-28 ('Molar Berg')",
-    size_nm: "16 × 11 NM",
-    length_km: 30,
-    width_km: 20,
-    calved_from: "Amery Ice Shelf",
-    lon: 64.2,
-    lat: -62.4,
-    u10_e: 6.8,
-    u10_n: -1.6,
-    cur_e: -0.09,
-    cur_n: -0.02,
-    label: "D-28 (16×11 NM · Cooperation Sea)",
-  },
-  {
-    id: "B-22A",
-    name: "Tabular Berg B-22A Fragment",
-    size_nm: "12 × 8 NM",
-    length_km: 22,
-    width_km: 15,
-    calved_from: "Thwaites / East Drift",
-    lon: 71.8,
-    lat: -65.1,
-    u10_e: 6.0,
-    u10_n: 1.3,
-    cur_e: -0.08,
-    cur_n: 0.01,
-    label: "B-22A (12×8 NM · Prydz Approach)",
-  },
-  {
-    id: "A-74",
-    name: "Tabular Berg A-74 Sector",
-    size_nm: "19 × 10 NM",
-    length_km: 35,
-    width_km: 18,
-    calved_from: "Brunt Ice Shelf",
-    lon: 36.5,
-    lat: -64.2,
-    u10_e: 6.4,
-    u10_n: 0.9,
-    cur_e: -0.07,
-    cur_n: 0.01,
-    label: "A-74 (19×10 NM · Cosmonaut Sea)",
-  },
-  {
-    id: "A-76A",
-    name: "Tabular Berg A-76A Remnant",
-    size_nm: "14 × 7 NM",
-    length_km: 26,
-    width_km: 13,
-    calved_from: "Ronne / Weddell Gyre",
-    lon: 18.5,
-    lat: -66.4,
-    u10_e: 5.5,
-    u10_n: 1.1,
-    cur_e: -0.07,
-    cur_n: 0.02,
-    label: "A-76A (14×7 NM · Lazarev Sea)",
-  },
-];
+// Real-World Named Tabular Icebergs (loaded from /datasets/tabular_icebergs_usnic.json)
+const SEEDS: any[] = icebergsDataset.bergs;
 const ALPHA = 0.022;
 const THETA_DEG = 25.0;
 const CONE_KM_PER_DAY = 11.5;
@@ -1074,7 +966,8 @@ function astar(
   goal: [number, number],
   wRisk = 0.35,
   wTime = 1.0,
-  useRisk = true
+  useRisk = true,
+  allowHeavyCreep = false
 ): { path: [number, number][] | null; hours: number | null } {
   const H = CROP_H;
   const W = CROP_W;
@@ -1163,7 +1056,11 @@ function astar(
       if (DATA.land[nIdx] > 0) continue;
 
       const sic = forecast[day * N + nIdx];
-      const sf = speedFactor(sic);
+      let sf = speedFactor(sic);
+      // Allow entering the goal cell or creeping through severe pack ice if strict PC6 limit blocks all paths
+      if (sf <= 0 && (allowHeavyCreep || nIdx === goalIdx)) {
+        sf = 0.12;
+      }
       const v = OPEN_WATER_KMH * sf;
       if (v <= 0) continue;
 
@@ -1184,6 +1081,11 @@ function astar(
         push([ng + h(nr, nc), ng, nIdx]);
       }
     }
+  }
+
+  // Fallback: if strict 70% SIC threshold blocked reaching a heavy-ice coastal destination, retry with icebreaker creep enabled
+  if (!allowHeavyCreep) {
+    return astar(forecast, D, start, goal, wRisk, wTime, useRisk, true);
   }
 
   return { path: null, hours: null };
@@ -1327,6 +1229,14 @@ function pathMetrics(
         "WP-3 · Lazarev Sea Lead Entry",
         "WP-4 · Maitri Station Approach",
       ];
+    } else if (goalKey === "custom") {
+      titles = [
+        "WP-0 · Departure Gate",
+        "WP-1 · Outer Pack-Ice Transit",
+        "WP-2 · Mid-Corridor Ice Avoidance",
+        "WP-3 · Coastal Lead Approach",
+        "WP-4 · Custom Destination Arrival",
+      ];
     }
     indices.forEach((idx, wIdx) => {
       const pt = stepTelemetry[idx];
@@ -1359,6 +1269,136 @@ function pathToXy(path: [number, number][]): [number, number][] {
   return path.map(([r, c]) => [Number(DATA.x[c]), Number(DATA.y[r])]);
 }
 
+function findNearestNavigableCell(targetR: number, targetC: number): [number, number] {
+  const r0 = Math.max(0, Math.min(CROP_H - 1, Math.round(targetR)));
+  const c0 = Math.max(0, Math.min(CROP_W - 1, Math.round(targetC)));
+  if (DATA.land[r0 * CROP_W + c0] === 0) return [r0, c0];
+  let bestR = r0;
+  let bestC = c0;
+  let bestDist2 = Infinity;
+  for (let r = 0; r < CROP_H; r++) {
+    for (let c = 0; c < CROP_W; c++) {
+      if (DATA.land[r * CROP_W + c] === 0) {
+        const d2 = (r - r0) * (r - r0) + (c - c0) * (c - c0);
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          bestR = r;
+          bestC = c;
+        }
+      }
+    }
+  }
+  return [bestR, bestC];
+}
+
+function describeLocationAt(
+  lon: number,
+  lat: number,
+  date: string = DEMO_D0,
+  fromRow?: number | null,
+  fromCol?: number | null
+) {
+  const [xm, ym] = lonlatToXy(lon, lat);
+  const [row, col] = DATA.xyToIndex(xm, ym);
+  const idx = row * CROP_W + col;
+  const elevM = Math.round(DATA.elevation[idx] || 0);
+  const sType = Math.round(DATA.surfaceType[idx] || 0);
+  const isLand = DATA.land[idx] === 1;
+  const sicArr = DATA.sicByDate.get(date) || DATA.sicByDate.get(DEMO_D0);
+  const localSic = isLand || !sicArr ? 0 : Number(sicArr[idx].toFixed(3));
+
+  const surfaceLabels: Record<number, string> = {
+    0:
+      localSic >= 0.4
+        ? "Heavy Pack Ice (≥40% SIC)"
+        : localSic >= 0.15
+        ? "Marginal Drift Ice (15–40% SIC)"
+        : "Navigable Southern Ocean Water",
+    1: "Exposed Coastal Bedrock Oasis",
+    2:
+      elevM >= 1600
+        ? "High Antarctic Plateau / Mountain Range"
+        : "Grounded Continental Ice Sheet",
+    3: "Floating Glacial Ice Shelf",
+  };
+
+  // Find nearest station or landmark
+  let nearestName = "East Antarctic Sector";
+  let nearestDistKm = Infinity;
+  const candidates: { name: string; x_m: number; y_m: number }[] = [
+    ...Object.values(DATA.stations).map((s: any) => ({
+      name: s.name,
+      x_m: s.x_m,
+      y_m: s.y_m,
+    })),
+    ...DATA.landmarks.map((l: any) => ({
+      name: String(l.name).replace(/\n/g, " "),
+      x_m: l.x_m,
+      y_m: l.y_m,
+    })),
+    ...DATA.mountains.map((m: any) => ({
+      name: m.name,
+      x_m: m.x_m,
+      y_m: m.y_m,
+    })),
+  ];
+
+  for (const cand of candidates) {
+    const dKm = Math.hypot(cand.x_m - xm, cand.y_m - ym) / 1000;
+    if (dKm < nearestDistKm) {
+      nearestDistKm = dKm;
+      nearestName = cand.name;
+    }
+  }
+
+  const startSt = DATA.stations.ice_entry;
+  const sRow = fromRow != null ? Number(fromRow) : startSt.row;
+  const sCol = fromCol != null ? Number(fromCol) : startSt.col;
+  const startXm = DATA.x[sCol];
+  const startYm = DATA.y[sRow];
+  const directDistKm = Number(
+    (Math.hypot(xm - startXm, ym - startYm) / 1000).toFixed(1)
+  );
+  const [navRow, navCol] = findNearestNavigableCell(row, col);
+  const navXm = Math.round(DATA.x[navCol]);
+  const navYm = Math.round(DATA.y[navRow]);
+  const [navLon, navLat] = xyToLonlat(navXm, navYm);
+  const estHours = Math.max(
+    1,
+    Math.round((directDistKm * 1.15) / (OPEN_WATER_KMH * 0.82))
+  );
+
+  return {
+    lon: Number(lon.toFixed(4)),
+    lat: Number(lat.toFixed(4)),
+    x_m: Math.round(xm),
+    y_m: Math.round(ym),
+    row,
+    col,
+    nav_row: navRow,
+    nav_col: navCol,
+    nav_x_m: navXm,
+    nav_y_m: navYm,
+    nav_lon: Number(navLon.toFixed(3)),
+    nav_lat: Number(navLat.toFixed(3)),
+    is_land: isLand,
+    elevation_m: elevM,
+    surface_type_code: sType,
+    surface_type: surfaceLabels[sType] || "Polar Surface",
+    sic: localSic,
+    sic_pct: Math.round(localSic * 100),
+    nearest_feature: nearestName,
+    nearest_feature_dist_km: Math.round(nearestDistKm),
+    label:
+      nearestDistKm <= 45
+        ? nearestName
+        : `${Math.round(nearestDistKm)} km from ${nearestName}`,
+    direct_distance_km: directDistKm,
+    direct_distance_nm: Number((directDistKm * 0.539957).toFixed(1)),
+    estimated_transit_hours: estHours,
+  };
+}
+
 function planRoute(
   date: string,
   wRisk: number,
@@ -1367,7 +1407,9 @@ function planRoute(
   startKey: string,
   goalKey: string,
   fromRow?: number | null,
-  fromCol?: number | null
+  fromCol?: number | null,
+  toRow?: number | null,
+  toCol?: number | null
 ) {
   const nDays = 14;
   const N = CROP_H * CROP_W;
@@ -1394,9 +1436,12 @@ function planRoute(
   const goalSt = DATA.stations[goalKey] || DATA.stations.bharati;
   const start: [number, number] =
     fromRow != null && fromCol != null
-      ? [Number(fromRow), Number(fromCol)]
+      ? findNearestNavigableCell(Number(fromRow), Number(fromCol))
       : [startSt.row, startSt.col];
-  const goal: [number, number] = [goalSt.row, goalSt.col];
+  const goal: [number, number] =
+    toRow != null && toCol != null
+      ? findNearestNavigableCell(Number(toRow), Number(toCol))
+      : [goalSt.row, goalSt.col];
 
   const { path, hours } = astar(
     stack,
@@ -1806,6 +1851,10 @@ async function startServer() {
       shape: DATA.shape,
       stations: DATA.stations,
       landmarks: DATA.landmarks,
+      mountains: DATA.mountains,
+      roads_and_traverses: DATA.roadsAndTraverses,
+      elevation: pack(DATA.elevation, [CROP_H, CROP_W]),
+      surface_type: pack(DATA.surfaceType, [CROP_H, CROP_W]),
       crop: DATA.crop,
       gate: cachedEval.validationPayload.gate,
       hindcast_summary: {
@@ -2065,6 +2114,137 @@ async function startServer() {
     }
   });
 
+  app.post("/api/location-info", (req, res) => {
+    try {
+      const {
+        lon,
+        lat,
+        x_m,
+        y_m,
+        date = DEMO_D0,
+        from_row = null,
+        from_col = null,
+      } = req.body || {};
+      let targetLon = Number(lon);
+      let targetLat = Number(lat);
+      if (
+        (lon == null || lat == null) &&
+        x_m != null &&
+        y_m != null
+      ) {
+        [targetLon, targetLat] = xyToLonlat(Number(x_m), Number(y_m));
+      }
+      if (Number.isNaN(targetLon) || Number.isNaN(targetLat)) {
+        return res.status(400).json({ error: "Valid coordinates required" });
+      }
+      const info = describeLocationAt(
+        targetLon,
+        targetLat,
+        String(date),
+        from_row,
+        from_col
+      );
+      res.json(info);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || String(err) });
+    }
+  });
+
+  app.get("/api/search-locations", async (req, res) => {
+    try {
+      const q = String(req.query.q || "")
+        .trim()
+        .toLowerCase();
+      const allItems: any[] = [];
+
+      for (const [key, st] of Object.entries(DATA.stations)) {
+        if (!st.in_grid && key !== "cape_town") continue;
+        allItems.push({
+          id: `station-${key}`,
+          name: st.name,
+          category: "Research Station / Gate",
+          detail: `${st.country} · ${st.role}`,
+          lon: st.lon,
+          lat: st.lat,
+          x_m: st.x_m,
+          y_m: st.y_m,
+          row: st.row,
+          col: st.col,
+        });
+      }
+
+      for (const mt of DATA.mountains) {
+        const [r, c] = DATA.xyToIndex(mt.x_m, mt.y_m);
+        allItems.push({
+          id: mt.id,
+          name: mt.name,
+          category: "Mountain Range / Peak",
+          detail: `Summit ${mt.peak_m} m · East Antarctica`,
+          lon: mt.lon,
+          lat: mt.lat,
+          x_m: mt.x_m,
+          y_m: mt.y_m,
+          row: r,
+          col: c,
+        });
+      }
+
+      for (const lm of DATA.landmarks) {
+        const [r, c] = DATA.xyToIndex(lm.x_m, lm.y_m);
+        const cleanName = String(lm.name).replace(/\n/g, " ");
+        allItems.push({
+          id: `lm-${cleanName}`,
+          name: cleanName,
+          category:
+            lm.kind === "shelf" || lm.kind === "glacier"
+              ? "Ice Shelf / Glacier"
+              : lm.kind === "sea" || lm.kind === "ocean"
+              ? "Southern Ocean Sea / Bay"
+              : "Antarctic Region",
+          detail: `${Math.abs(lm.lat).toFixed(1)}°S, ${Math.abs(lm.lon).toFixed(
+            1
+          )}°E`,
+          lon: lm.lon,
+          lat: lm.lat,
+          x_m: lm.x_m,
+          y_m: lm.y_m,
+          row: r,
+          col: c,
+        });
+      }
+
+      for (const berg of SEEDS) {
+        const [xm, ym] = lonlatToXy(berg.lon, berg.lat);
+        const [r, c] = DATA.xyToIndex(xm, ym);
+        allItems.push({
+          id: `berg-${berg.id}`,
+          name: berg.name,
+          category: "Tracked Tabular Iceberg",
+          detail: `${berg.size_nm} · Calved from ${berg.calved_from}`,
+          lon: berg.lon,
+          lat: berg.lat,
+          x_m: xm,
+          y_m: ym,
+          row: r,
+          col: c,
+        });
+      }
+
+      const filtered = q
+        ? allItems.filter(
+            (item) =>
+              item.name.toLowerCase().includes(q) ||
+              item.category.toLowerCase().includes(q) ||
+              item.detail.toLowerCase().includes(q)
+          )
+        : allItems;
+
+      res.json({ results: filtered.slice(0, 14) });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || String(err) });
+    }
+  });
+
   app.post("/api/route", (req, res) => {
     try {
       const {
@@ -2076,7 +2256,42 @@ async function startServer() {
         goal = "bharati",
         from_row = null,
         from_col = null,
+        to_row = null,
+        to_col = null,
+        dest_lon = null,
+        dest_lat = null,
+        dest_name = null,
       } = req.body || {};
+
+      let resolvedToRow = to_row;
+      let resolvedToCol = to_col;
+      let customDestMeta: any = null;
+
+      if (dest_lon != null && dest_lat != null) {
+        customDestMeta = describeLocationAt(
+          Number(dest_lon),
+          Number(dest_lat),
+          String(date),
+          from_row,
+          from_col
+        );
+        if (dest_name) customDestMeta.custom_name = String(dest_name);
+        resolvedToRow = customDestMeta.nav_row;
+        resolvedToCol = customDestMeta.nav_col;
+      } else if (to_row != null && to_col != null) {
+        const [r, c] = [Number(to_row), Number(to_col)];
+        const [lon, lat] = xyToLonlat(DATA.x[c], DATA.y[r]);
+        customDestMeta = describeLocationAt(
+          lon,
+          lat,
+          String(date),
+          from_row,
+          from_col
+        );
+        if (dest_name) customDestMeta.custom_name = String(dest_name);
+        resolvedToRow = customDestMeta.nav_row;
+        resolvedToCol = customDestMeta.nav_col;
+      }
 
       const src =
         forecast_source === "clim" || forecast_source === "static"
@@ -2093,7 +2308,9 @@ async function startServer() {
         start,
         goal,
         from_row,
-        from_col
+        from_col,
+        resolvedToRow,
+        resolvedToCol
       );
       const st = planRoute(
         date,
@@ -2103,7 +2320,9 @@ async function startServer() {
         start,
         goal,
         from_row,
-        from_col
+        from_col,
+        resolvedToRow,
+        resolvedToCol
       );
 
       const guidance = computeDynamicCourseCorrections(
@@ -2119,6 +2338,7 @@ async function startServer() {
         forecast_aware: fc,
         static: st,
         w_risk: Number(w_risk),
+        custom_destination: customDestMeta,
         ...guidance,
       });
     } catch (err: any) {
