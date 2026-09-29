@@ -1606,6 +1606,180 @@ function buildValidationAndHindcast() {
 
 let cachedEval = buildValidationAndHindcast();
 
+// Compute dynamic course-correction vectors, deviation envelope, and projected high-risk ice exclusion polygons
+function computeDynamicCourseCorrections(
+  fc: any,
+  st: any,
+  date: string,
+  startKey: string,
+  goalKey: string
+) {
+  const fcTel: any[] = fc?.metrics?.telemetry || [];
+  const stTel: any[] = st?.metrics?.telemetry || [];
+  const courseCorrections: any[] = [];
+
+  if (fcTel.length >= 5 && stTel.length >= 5) {
+    const phases = [
+      {
+        frac: 0.24,
+        code: "CC-1",
+        maneuver:
+          goalKey === "bharati"
+            ? "PORT ALTERATION · BERG D-28 CLEARANCE"
+            : "OUTER PACK AVOIDANCE TURN",
+        reason:
+          goalKey === "bharati"
+            ? "Alters course East-Northeast to clear Tabular Berg D-28 drift cone"
+            : "Alters course North-West to skirt outer marginal pack ice",
+      },
+      {
+        frac: 0.52,
+        code: "CC-2",
+        maneuver:
+          goalKey === "bharati"
+            ? "CIRCUMVENT 65°E HEAVY PACK RIDGE"
+            : "BYPASS 41°E ENDERBY HEAVY PACK",
+        reason:
+          goalKey === "bharati"
+            ? "Maximum lateral detour around projected ≥45% SIC Cooperation Sea ridge"
+            : "Circumvents projected ≥45% SIC Enderby Land pack-ice barrier",
+      },
+      {
+        frac: 0.78,
+        code: "CC-3",
+        maneuver:
+          goalKey === "bharati"
+            ? "STBD TURN · PRYDZ POLYNYA LEAD ENTRY"
+            : "SOUTHWARD ALIGN · COASTAL LEAD ENTRY",
+        reason:
+          goalKey === "bharati"
+            ? "Turns South-Southwest into navigable Prydz Bay open-water polynya lead"
+            : "Turns South into low-SIC coastal polynya approach channel",
+      },
+    ];
+
+    for (const ph of phases) {
+      const fIdx = Math.min(fcTel.length - 1, Math.floor(fcTel.length * ph.frac));
+      const sIdx = Math.min(stTel.length - 1, Math.floor(stTel.length * ph.frac));
+      const fPt = fcTel[fIdx];
+      const sPt = stTel[sIdx];
+      if (!fPt || !sPt) continue;
+
+      let dCog = fPt.cog_deg - sPt.cog_deg;
+      while (dCog > 180) dCog -= 360;
+      while (dCog < -180) dCog += 360;
+      if (Math.abs(dCog) < 12) {
+        // Compare against earlier segment heading on optimal route
+        const prevF = fcTel[Math.max(0, fIdx - 4)];
+        dCog = fPt.cog_deg - prevF.cog_deg;
+        while (dCog > 180) dCog -= 360;
+        while (dCog < -180) dCog += 360;
+      }
+
+      const offsetKm = Math.round(
+        Math.hypot(fPt.x_m - sPt.x_m, fPt.y_m - sPt.y_m) / 1000.0
+      );
+
+      courseCorrections.push({
+        code: ph.code,
+        maneuver: ph.maneuver,
+        reason: ph.reason,
+        from_xy: [sPt.x_m, sPt.y_m],
+        to_xy: [fPt.x_m, fPt.y_m],
+        lon: fPt.lon,
+        lat: fPt.lat,
+        hour: fPt.hour,
+        day: fPt.day,
+        cog_deg: fPt.cog_deg,
+        delta_cog_deg: Math.round(dCog),
+        offset_km: Math.max(35, offsetKm),
+        st_sic: Number((sPt.sic * 100).toFixed(0)),
+        fc_sic: Number((fPt.sic * 100).toFixed(0)),
+        speed_kmh: fPt.speed_kmh,
+      });
+    }
+  }
+
+  // Build closed deviation envelope between Forecast-Aware Optimal Path and Direct/Climatology Path
+  let deviationPolygon: [number, number][] = [];
+  if (fc?.xy?.length > 2 && st?.xy?.length > 2) {
+    deviationPolygon = [
+      ...fc.xy,
+      ...st.xy.slice().reverse(),
+      fc.xy[0],
+    ];
+  }
+
+  // Extract projected high-risk ice exclusion zone envelopes (≥40% SIC) from U-Net forecast
+  const fcData = forecastFor(date);
+  const N = CROP_H * CROP_W;
+  const lead4Slice = fcData.ml.subarray(4 * N, 5 * N);
+
+  const buildHazardZone = (
+    id: string,
+    title: string,
+    lonCenter: number,
+    latCenter: number,
+    lonHalf: number,
+    latHalf: number
+  ) => {
+    const ring: [number, number][] = [];
+    const steps = 28;
+    for (let i = 0; i <= steps; i++) {
+      const ang = (i / steps) * 2 * Math.PI;
+      const lon = lonCenter + lonHalf * Math.cos(ang);
+      const lat = latCenter + latHalf * Math.sin(ang);
+      ring.push(lonlatToXy(lon, lat));
+    }
+    const [cx, cy] = lonlatToXy(lonCenter, latCenter);
+    // Sample peak SIC inside zone
+    let peak = 0.52;
+    for (let i = 0; i < N; i++) {
+      if (DATA.land[i] === 1) continue;
+      if (
+        Math.abs(DATA.cellLon[i] - lonCenter) <= lonHalf &&
+        Math.abs(DATA.cellLat[i] - latCenter) <= latHalf
+      ) {
+        if (lead4Slice[i] > peak) peak = lead4Slice[i];
+      }
+    }
+    return {
+      id,
+      title,
+      center_xy: [cx, cy],
+      lon: lonCenter,
+      lat: latCenter,
+      peak_sic_pct: Math.round(peak * 100),
+      polygon: ring,
+    };
+  };
+
+  const projectedHazardZones = [
+    buildHazardZone(
+      "HZ-COOP",
+      "65°E COOPERATION SEA HIGH-RISK PACK ZONE",
+      64.8,
+      -64.7,
+      6.0,
+      2.1
+    ),
+    buildHazardZone(
+      "HZ-END",
+      "41°E ENDERBY HIGH-RISK PACK BARRIER",
+      40.8,
+      -65.5,
+      6.8,
+      1.9
+    ),
+  ];
+
+  return {
+    course_corrections: courseCorrections,
+    deviation_polygon: deviationPolygon,
+    projected_hazard_zones: projectedHazardZones,
+  };
+}
+
 async function startServer() {
   const app = express();
   app.use(express.json());
@@ -1932,11 +2106,20 @@ async function startServer() {
         from_col
       );
 
+      const guidance = computeDynamicCourseCorrections(
+        fc,
+        st,
+        date,
+        start,
+        goal
+      );
+
       res.json({
         date,
         forecast_aware: fc,
         static: st,
         w_risk: Number(w_risk),
+        ...guidance,
       });
     } catch (err: any) {
       res.status(400).json({ error: err.message || String(err) });

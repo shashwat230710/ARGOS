@@ -580,6 +580,237 @@ td.neg {
   color: var(--text-primary);
 }
 
+.dss-map-camera-bar button.active,
+.dss-map-camera-bar button.dss-cam-btn-ship {
+  border-color: var(--accent-amber);
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+/* Live Ship Location & Tactical Local Ice Radar HUD */
+.dss-ship-bridge-hud {
+  position: absolute;
+  bottom: 48px;
+  left: 12px;
+  z-index: 14;
+  width: 392px;
+  background: rgba(11, 15, 23, 0.96);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dss-sb-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 6px;
+}
+
+.dss-sb-tag {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #fbbf24;
+  letter-spacing: 0.04em;
+}
+
+.dss-sb-head h3 {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 1px;
+}
+
+.dss-sb-head h3 span {
+  font-size: 11px;
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+.dss-sb-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dss-sb-actions button {
+  background: var(--bg-obsidian);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  padding: 3px 7px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.dss-sb-actions button:hover {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.dss-sb-body {
+  display: grid;
+  grid-template-columns: 142px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.dss-bridge-scope-canvas {
+  width: 142px;
+  height: 142px;
+  border: 1px solid rgba(56, 189, 248, 0.38);
+  border-radius: 4px;
+  background: #060d18;
+  display: block;
+}
+
+.dss-sb-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dss-sb-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.dss-sb-grid > div {
+  background: var(--bg-obsidian);
+  border: 1px solid var(--border-hairline);
+  border-radius: 3px;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dss-sb-grid span {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.dss-sb-grid strong {
+  font-size: 10.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dss-sb-grid strong.warn-text {
+  color: var(--accent-rose);
+}
+
+.dss-sb-scrubber {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dss-sb-scrub-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-secondary);
+}
+
+.dss-sb-scrub-head button {
+  background: transparent;
+  border: none;
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.dss-sb-scrubber input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-amber);
+  cursor: pointer;
+}
+
+/* Dynamic Course Corrections List in Right Sidebar */
+.dss-cc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.dss-cc-card {
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 4px;
+  padding: 6px 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.dss-cc-card:hover {
+  border-color: #fbbf24;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.dss-cc-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dss-cc-badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #07090e;
+  background: #fbbf24;
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+.dss-cc-maneuver {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: #fde68a;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dss-cc-delta {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-emerald);
+}
+
+.dss-cc-sub {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
 /* On-Map Target Telemetry Inspector Card */
 .dss-map-inspect-card {
   position: absolute;

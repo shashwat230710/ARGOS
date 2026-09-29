@@ -57,6 +57,180 @@ function FeatureMapCanvas({ gridPack, landPack, mode = "error", title, subtitle 
   );
 }
 
+// Live Ship-Centered Tactical Ice & Avoidance Radar Scope (220 km × 220 km around RV Polar Explorer)
+function ShipBridgeScope({
+  shipTel,
+  fcPath,
+  stPath,
+  activeSlice,
+  extent,
+  shape,
+}) {
+  const radarCanvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = radarCanvasRef.current;
+    if (!canvas || !shipTel || !extent || !shape) return;
+    const W_PX = 142;
+    const H_PX = 142;
+    canvas.width = W_PX;
+    canvas.height = H_PX;
+    const ctx = canvas.getContext("2d");
+
+    ctx.fillStyle = "#060d18";
+    ctx.fillRect(0, 0, W_PX, H_PX);
+
+    const [xmin, ymin, xmax, ymax] = extent;
+    const [H, W] = shape;
+    const sx = shipTel.x_m;
+    const sy = shipTel.y_m;
+    const halfSpan = 125000; // ±125 km tactical radar window
+
+    function mapToPx(xm, ym) {
+      const px = ((xm - (sx - halfSpan)) / (2 * halfSpan)) * W_PX;
+      const py = (((sy + halfSpan) - ym) / (2 * halfSpan)) * H_PX;
+      return [px, py];
+    }
+
+    // 1. Paint local 25 km sea-ice cells & highlight high-risk ≥40% cells
+    const sicData = activeSlice?.slice?.data;
+    const landData = activeSlice?.land?.data;
+    const cellW = (xmax - xmin) / W;
+    const cellH = (ymax - ymin) / H;
+
+    if (sicData) {
+      for (let r = 0; r < H; r++) {
+        const cy = ymax - (r + 0.5) * cellH;
+        if (Math.abs(cy - sy) > halfSpan + cellH) continue;
+        for (let c = 0; c < W; c++) {
+          const cx = xmin + (c + 0.5) * cellW;
+          if (Math.abs(cx - sx) > halfSpan + cellW) continue;
+          const idx = r * W + c;
+          const [px, py] = mapToPx(cx - cellW / 2, cy + cellH / 2);
+          const pw = (cellW / (2 * halfSpan)) * W_PX + 0.6;
+          const ph = (cellH / (2 * halfSpan)) * H_PX + 0.6;
+
+          if (landData && landData[idx] > 0.5) {
+            ctx.fillStyle = "#1e293b";
+            ctx.fillRect(px, py, pw, ph);
+            continue;
+          }
+          const sic = sicData[idx] || 0;
+          if (sic >= 0.38) {
+            const alpha = Math.min(0.92, 0.35 + sic * 0.65);
+            ctx.fillStyle = `rgba(244, 63, 94, ${alpha.toFixed(2)})`;
+            ctx.fillRect(px, py, pw, ph);
+            ctx.strokeStyle = "rgba(253, 164, 175, 0.55)";
+            ctx.lineWidth = 0.7;
+            ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+          } else if (sic >= 0.12) {
+            const alpha = Math.min(0.82, 0.20 + sic * 0.75);
+            ctx.fillStyle = `rgba(56, 189, 248, ${alpha.toFixed(2)})`;
+            ctx.fillRect(px, py, pw, ph);
+          }
+        }
+      }
+    }
+
+    // 2. Draw Naive Climatology Path in local radar scope (dashed rose)
+    if (stPath?.length > 1) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = "rgba(251, 113, 133, 0.80)";
+      ctx.lineWidth = 1.5;
+      stPath.forEach(([xm, ym], i) => {
+        const [px, py] = mapToPx(xm, ym);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 3. Draw Optimal Avoidance Path (Wake = Emerald, Forward Path = Cyan)
+    if (fcPath?.length > 1) {
+      const splitIdx = Math.max(0, Math.min(fcPath.length - 1, shipTel.idx || 0));
+      if (splitIdx > 0) {
+        ctx.beginPath();
+        ctx.strokeStyle = "#10b981";
+        ctx.lineWidth = 2.0;
+        for (let i = 0; i <= splitIdx; i++) {
+          const [px, py] = mapToPx(fcPath[i][0], fcPath[i][1]);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.strokeStyle = "#22d3ee";
+      ctx.lineWidth = 2.5;
+      for (let i = splitIdx; i < fcPath.length; i++) {
+        const [px, py] = mapToPx(fcPath[i][0], fcPath[i][1]);
+        if (i === splitIdx) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    // 4. Concentric Radar Range Rings (50 km, 100 km) & Crosshair
+    const cx = W_PX / 2;
+    const cy = H_PX / 2;
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.26)";
+    ctx.lineWidth = 0.85;
+    for (const rMeters of [50000, 100000]) {
+      const rPx = (rMeters / (2 * halfSpan)) * W_PX;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, H_PX);
+    ctx.moveTo(0, cy);
+    ctx.lineTo(W_PX, cy);
+    ctx.stroke();
+
+    // 5. Ship Heading Vector & Oriented Vessel Hull at Center
+    const dx = (shipTel.next_x_m ?? sx) - sx;
+    const dy = (shipTel.next_y_m ?? sy - 1000) - sy;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = -dy / len; // canvas Y is inverted relative to EPSG:3412 Y
+
+    ctx.beginPath();
+    ctx.strokeStyle = "#fde047";
+    ctx.lineWidth = 1.8;
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + ux * 36, cy + uy * 36);
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(Math.atan2(ux, -uy));
+    ctx.beginPath();
+    ctx.moveTo(0, -9);
+    ctx.lineTo(5.5, 2);
+    ctx.lineTo(4.5, 8);
+    ctx.lineTo(-4.5, 8);
+    ctx.lineTo(-5.5, 2);
+    ctx.closePath();
+    ctx.fillStyle = "#f59e0b";
+    ctx.fill();
+    ctx.strokeStyle = "#fef3c7";
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+    ctx.restore();
+
+    // Scale label
+    ctx.fillStyle = "rgba(148, 163, 184, 0.85)";
+    ctx.font = "500 9px 'JetBrains Mono', monospace";
+    ctx.fillText("50 / 100 km RING", 5, H_PX - 5);
+  }, [shipTel, fcPath, stPath, activeSlice, extent, shape]);
+
+  return <canvas ref={radarCanvasRef} className="dss-bridge-scope-canvas" />;
+}
+
 export default function App() {
   const [scenario, setScenario] = useState(null);
   const [date, setDate] = useState("2023-01-10");
@@ -84,14 +258,18 @@ export default function App() {
   const [timelineStep, setTimelineStep] = useState(1); // -6..0 = history days, 1..7 = forecast lead days
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // Overlay toggles
+  // Overlay toggles & Ship Tracking state
   const [showIceContours, setShowIceContours] = useState(true);
   const [showIceVectors, setShowIceVectors] = useState(true);
   const [showIcebergs, setShowIcebergs] = useState(true);
   const [showRoutes, setShowRoutes] = useState(true);
+  const [showCourseCorrections, setShowCourseCorrections] = useState(true);
   const [showStations, setShowStations] = useState(true);
   const [showGraticule, setShowGraticule] = useState(true);
   const [selectedTarget, setSelectedTarget] = useState(null);
+  const [shipStepIdx, setShipStepIdx] = useState(null);
+  const [autoFollowShip, setAutoFollowShip] = useState(false);
+  const [showShipBridge, setShowShipBridge] = useState(true);
 
   // Routing parameters
   const [leg, setLeg] = useState("ice_entry->bharati");
@@ -113,53 +291,10 @@ export default function App() {
   const graticuleSourceRef = useRef(new VectorSource());
   const iceDynamicsSourceRef = useRef(new VectorSource());
   const routeSourceRef = useRef(new VectorSource());
+  const pulseSourceRef = useRef(new VectorSource());
   const icebergSourceRef = useRef(new VectorSource());
   const stationSourceRef = useRef(new VectorSource());
   const activeSliceRef = useRef(null);
-
-  // Helper: Zoom / Pan map camera to real-world Antarctic sector presets
-  function handleFocusMapSector(sector) {
-    if (!mapRef.current || !scenario) return;
-    const view = mapRef.current.getView();
-    if (sector === "full") {
-      view.fit(scenario.extent, { padding: [20, 20, 20, 20], duration: 350 });
-      return;
-    }
-    if (sector === "prydz") {
-      const [x1, y1] = proj4("EPSG:4326", "EPSG:3412", [56.0, -60.0]);
-      const [x2, y2] = proj4("EPSG:4326", "EPSG:3412", [84.0, -71.5]);
-      const ext = [
-        Math.min(x1, x2),
-        Math.min(y1, y2),
-        Math.max(x1, x2),
-        Math.max(y1, y2),
-      ];
-      view.fit(ext, { padding: [30, 30, 30, 30], duration: 350 });
-      return;
-    }
-    if (sector === "maitri") {
-      const [x1, y1] = proj4("EPSG:4326", "EPSG:3412", [2.0, -61.5]);
-      const [x2, y2] = proj4("EPSG:4326", "EPSG:3412", [46.0, -72.5]);
-      const ext = [
-        Math.min(x1, x2),
-        Math.min(y1, y2),
-        Math.max(x1, x2),
-        Math.max(y1, y2),
-      ];
-      view.fit(ext, { padding: [30, 30, 30, 30], duration: 350 });
-      return;
-    }
-    if (sector === "ship" && routeData?.forecast_aware?.xy?.length) {
-      const fcXy = routeData.forecast_aware.xy;
-      const leadDay = Math.max(0, timelineStep);
-      const idx = Math.min(
-        fcXy.length - 1,
-        Math.floor((leadDay / 7) * (fcXy.length - 1))
-      );
-      const [sx, sy] = fcXy[idx] || fcXy[0];
-      view.animate({ center: [sx, sy], zoom: 3.4, duration: 350 });
-    }
-  }
 
   // 1. Load initial scenario, ML status, validation, hindcast, icebergs
   useEffect(() => {
@@ -247,6 +382,10 @@ export default function App() {
       source: routeSourceRef.current,
     });
 
+    const pulseLayer = new VectorLayer({
+      source: pulseSourceRef.current,
+    });
+
     const stationLayer = new VectorLayer({
       source: stationSourceRef.current,
     });
@@ -265,6 +404,7 @@ export default function App() {
         iceDynamicsLayer,
         icebergLayer,
         routeLayer,
+        pulseLayer,
         stationLayer,
       ],
       view: new View({
@@ -275,7 +415,7 @@ export default function App() {
         enableRotation: false,
         zoom: 2,
         minZoom: 1,
-        maxZoom: 6,
+        maxZoom: 7,
       }),
     });
 
@@ -951,15 +1091,196 @@ export default function App() {
     }
   }, [scenario, showStations]);
 
-  // 8. Update Calculated Ship Avoidance Path, Naive Climatology Hazard Path & Oriented Ship Marker
+  // Compute active ship step index and live ship telemetry
+  const activeShipIdx = useMemo(() => {
+    const fcXy = routeData?.forecast_aware?.xy;
+    if (!fcXy || fcXy.length < 2) return 0;
+    if (shipStepIdx !== null) {
+      return Math.max(0, Math.min(fcXy.length - 1, shipStepIdx));
+    }
+    const leadDay = Math.max(0, timelineStep);
+    return Math.min(
+      fcXy.length - 1,
+      Math.max(0, Math.floor((leadDay / 7) * (fcXy.length - 1)))
+    );
+  }, [routeData, shipStepIdx, timelineStep]);
+
+  const activeShipTelemetry = useMemo(() => {
+    const fcXy = routeData?.forecast_aware?.xy;
+    const fcStepTel =
+      routeData?.forecast_aware?.metrics?.telemetry ||
+      routeData?.forecast_aware?.metrics?.step_telemetry ||
+      [];
+    if (!fcXy || fcXy.length < 2) return null;
+    const idx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
+    const coord = fcXy[idx];
+    const nextCoord = fcXy[Math.min(fcXy.length - 1, idx + 1)] || coord;
+    const rawTel = fcStepTel[idx] || {};
+    const [lon, lat] =
+      rawTel.lon != null && rawTel.lat != null
+        ? [rawTel.lon, rawTel.lat]
+        : proj4("EPSG:3412", "EPSG:4326", coord);
+    return {
+      idx,
+      totalSteps: fcXy.length,
+      progressPct: Math.round((idx / Math.max(1, fcXy.length - 1)) * 100),
+      x_m: coord[0],
+      y_m: coord[1],
+      next_x_m: nextCoord[0],
+      next_y_m: nextCoord[1],
+      row: rawTel.row ?? shipPos?.row ?? 0,
+      col: rawTel.col ?? shipPos?.col ?? 0,
+      lon,
+      lat,
+      hour: rawTel.hour ?? Math.round(idx * 2.1),
+      sic: rawTel.sic ?? 0.08,
+      speed_kmh: rawTel.speed_kmh ?? 22.5,
+      cog_deg: rawTel.cog_deg ?? 165,
+    };
+  }, [routeData, activeShipIdx, shipPos]);
+
+  // Camera sector & ship focus helpers
+  function handleFocusMapSector(sector) {
+    if (!mapRef.current || !scenario) return;
+    const view = mapRef.current.getView();
+    if (sector === "full") {
+      setAutoFollowShip(false);
+      view.fit(scenario.extent, { padding: [20, 20, 20, 20], duration: 420 });
+    } else if (sector === "prydz") {
+      setAutoFollowShip(false);
+      const bharati = scenario.stations?.bharati;
+      const center = bharati
+        ? [bharati.x_m, bharati.y_m + 350000]
+        : [2200000, 900000];
+      view.animate({ center, zoom: 3.3, duration: 420 });
+    } else if (sector === "maitri") {
+      setAutoFollowShip(false);
+      const maitri = scenario.stations?.maitri;
+      const center = maitri
+        ? [maitri.x_m + 350000, maitri.y_m + 350000]
+        : [800000, 2100000];
+      view.animate({ center, zoom: 3.2, duration: 420 });
+    } else if (sector === "ship" && activeShipTelemetry) {
+      view.animate({
+        center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
+        zoom: Math.max(view.getZoom() || 3, 4.2),
+        duration: 420,
+      });
+    }
+  }
+
+  function handleZoomToShip(closeUp = true) {
+    if (!mapRef.current || !activeShipTelemetry) return;
+    const view = mapRef.current.getView();
+    view.animate({
+      center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
+      zoom: closeUp ? 4.7 : 3.6,
+      duration: 450,
+    });
+  }
+
+  // Keep camera centered on ship when Auto-Follow Ship is enabled
+  useEffect(() => {
+    if (!autoFollowShip || !mapRef.current || !activeShipTelemetry) return;
+    mapRef.current.getView().animate({
+      center: [activeShipTelemetry.x_m, activeShipTelemetry.y_m],
+      duration: 240,
+    });
+  }, [autoFollowShip, activeShipTelemetry]);
+
+  // 8. Update Calculated Ship Avoidance Path, Dynamic Course Corrections, High-Risk Ice Exclusion Zones & Ship Marker
   useEffect(() => {
     const src = routeSourceRef.current;
     src.clear();
     if (!routeData || !showRoutes) return;
 
-    // A. Naive Static Climatology Route (Planned without synoptic U-Net forecast)
     const stXy = routeData.static?.xy;
     const stMetrics = routeData.static?.metrics;
+    const fcXy = routeData.forecast_aware?.xy;
+    const fcMetrics = routeData.forecast_aware?.metrics;
+    const fcTelemetry = fcMetrics?.telemetry || [];
+    const courseCorrections = routeData.course_corrections || [];
+    const hazardZones = routeData.projected_hazard_zones || [];
+    const deviationPoly = routeData.deviation_polygon;
+
+    // 0. Avoidance Deviation Envelope (shaded region between naive path and optimal path)
+    if (showCourseCorrections && deviationPoly && deviationPoly.length > 4) {
+      const envFeat = new Feature({
+        geometry: new Polygon([deviationPoly]),
+      });
+      envFeat.setStyle(
+        new Style({
+          fill: new Fill({ color: "rgba(6, 182, 212, 0.10)" }),
+          stroke: new Stroke({
+            color: "rgba(34, 211, 238, 0.28)",
+            width: 1.0,
+            lineDash: [4, 4],
+          }),
+        })
+      );
+      src.addFeature(envFeat);
+    }
+
+    // 0b. Projected High-Risk Ice Exclusion Zones (polygons circumvented by optimal route)
+    if (showCourseCorrections && hazardZones.length > 0) {
+      for (const hz of hazardZones) {
+        if (!hz.polygon_xy || hz.polygon_xy.length < 4) continue;
+        const hzInspect = {
+          kind: "Projected High-Risk Pack-Ice Zone",
+          title: `${hz.id} · Circumvented Ice Hazard`,
+          subtitle: `${Math.abs(hz.lat).toFixed(2)}°S, ${Math.abs(
+            hz.lon
+          ).toFixed(2)}°E · Radius ${hz.radius_km} km`,
+          metrics: [
+            {
+              label: "Projected Peak SIC",
+              value: `${Math.round(hz.peak_sic * 100)}% SIC (Severe Hull Resistance)`,
+            },
+            {
+              label: "Mean Zone Concentration",
+              value: `${Math.round(hz.mean_sic * 100)}% SIC (${hz.cells} cells)`,
+            },
+            {
+              label: "Navigation Action",
+              value: "Dynamic A* Course Alteration Applied",
+            },
+          ],
+        };
+        const hzPolyFeat = new Feature({
+          geometry: new Polygon([hz.polygon_xy]),
+          inspect: hzInspect,
+        });
+        hzPolyFeat.setStyle(
+          new Style({
+            fill: new Fill({ color: "rgba(244, 63, 94, 0.22)" }),
+            stroke: new Stroke({
+              color: "rgba(251, 113, 133, 0.90)",
+              width: 1.8,
+              lineDash: [6, 3],
+            }),
+          })
+        );
+        src.addFeature(hzPolyFeat);
+
+        const hzLblFeat = new Feature({
+          geometry: new Point([hz.x_m, hz.y_m]),
+          inspect: hzInspect,
+        });
+        hzLblFeat.setStyle(
+          new Style({
+            text: new TextStyle({
+              text: `HIGH-RISK ICE ${hz.id} (${Math.round(hz.peak_sic * 100)}% SIC)`,
+              font: "600 8.5px 'JetBrains Mono', monospace",
+              fill: new Fill({ color: "#fda4af" }),
+              stroke: new Stroke({ color: "#07090e", width: 3 }),
+            }),
+          })
+        );
+        src.addFeature(hzLblFeat);
+      }
+    }
+
+    // A. Naive Static Climatology Route (Planned without synoptic U-Net forecast)
     if (stXy && stXy.length > 1) {
       const stFeat = new Feature({
         geometry: new LineString(stXy),
@@ -1008,7 +1329,7 @@ export default function App() {
             new Style({
               stroke: new Stroke({
                 color: "rgba(244, 63, 94, 0.95)",
-                width: 4.0,
+                width: 4.2,
               }),
             })
           );
@@ -1066,95 +1387,182 @@ export default function App() {
       }
     }
 
-    // B. Calculated Forecast-Aware Ship Avoidance Path (U-Net + A*)
-    const fcXy = routeData.forecast_aware?.xy;
-    const fcMetrics = routeData.forecast_aware?.metrics;
-    const fcTelemetry = fcMetrics?.telemetry || [];
+    // B. Calculated Optimal Ship Navigation Path (split into Completed Wake + Forward Active Corridor)
     if (fcXy && fcXy.length > 1) {
-      // Outer dark casing + glowing laser-cyan core corridor
+      // Outer safety corridor halo along full optimal route
       const fcCaseFeat = new Feature({
         geometry: new LineString(fcXy),
       });
       fcCaseFeat.setStyle(
         new Style({
           stroke: new Stroke({
-            color: "rgba(8, 51, 68, 0.9)",
-            width: 6.5,
+            color: "rgba(6, 182, 212, 0.22)",
+            width: 9.5,
           }),
         })
       );
       src.addFeature(fcCaseFeat);
 
-      const fcFeat = new Feature({
-        geometry: new LineString(fcXy),
-        inspect: {
-          kind: "Calculated Ship Avoidance Path",
-          title: "U-Net Forecast-Aware A* Corridor",
-          subtitle: `Time-dependent 8-neighbor optimal avoidance path (λ = ${wRisk.toFixed(
-            2
-          )})`,
-          metrics: [
-            {
-              label: "Heavy-Ice Exposure (≥40% SIC)",
-              value: `${fcMetrics?.heavy_ice_hours ?? 0} hours`,
-            },
-            {
-              label: "Total Transit Duration",
-              value: `${fcMetrics?.hours ?? "—"} hours`,
-            },
-            {
-              label: "Track Distance",
-              value: `${fcMetrics?.distance_km ?? "—"} km`,
-            },
-          ],
-        },
-      });
-      fcFeat.setStyle(
-        new Style({
-          stroke: new Stroke({
-            color: "#06b6d4",
-            width: 3.4,
-          }),
-        })
-      );
-      src.addFeature(fcFeat);
+      const splitIdx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
+      const wakeCoords = fcXy.slice(0, splitIdx + 1);
+      const forwardCoords = fcXy.slice(splitIdx);
 
-      // Draw directional course chevrons along the calculated avoidance path
-      const stepStride = Math.max(4, Math.floor(fcXy.length / 8));
-      for (let i = stepStride; i < fcXy.length - 3; i += stepStride) {
-        const [x0, y0] = fcXy[i - 1];
-        const [x1, y1] = fcXy[i];
-        const dx = x1 - x0;
-        const dy = y1 - y0;
-        const segLen = Math.hypot(dx, dy);
-        if (segLen < 1000) continue;
-        const ux = dx / segLen;
-        const uy = dy / segLen;
-        const arm = 24000;
-        const wx1 = x1 - ux * arm - uy * (arm * 0.58);
-        const wy1 = y1 - uy * arm + ux * (arm * 0.58);
-        const wx2 = x1 - ux * arm + uy * (arm * 0.58);
-        const wy2 = y1 - uy * arm - ux * (arm * 0.58);
-
-        const chevFeat = new Feature({
-          geometry: new LineString([
-            [wx1, wy1],
-            [x1, y1],
-            [wx2, wy2],
-          ]),
+      // Completed vessel wake behind ship
+      if (wakeCoords.length > 1) {
+        const wakeFeat = new Feature({
+          geometry: new LineString(wakeCoords),
         });
-        chevFeat.setStyle(
+        wakeFeat.setStyle(
           new Style({
             stroke: new Stroke({
-              color: "#67e8f9",
-              width: 2.2,
+              color: "rgba(16, 185, 129, 0.88)",
+              width: 2.8,
+              lineDash: [4, 3],
             }),
           })
         );
-        src.addFeature(chevFeat);
+        src.addFeature(wakeFeat);
       }
 
-      // Plot Annotated Avoidance Waypoints (WP-1, WP-2, WP-3) along the calculated route
+      // Active forward optimal navigation path ahead of ship
+      if (forwardCoords.length > 1) {
+        const fcFeat = new Feature({
+          geometry: new LineString(forwardCoords),
+          inspect: {
+            kind: "Calculated Ship Avoidance Path",
+            title: "U-Net Forecast-Aware A* Corridor",
+            subtitle: `Time-dependent 8-neighbor optimal avoidance path (λ = ${wRisk.toFixed(
+              2
+            )})`,
+            metrics: [
+              {
+                label: "Heavy-Ice Exposure (≥40% SIC)",
+                value: `${fcMetrics?.heavy_ice_hours ?? 0} hours`,
+              },
+              {
+                label: "Total Transit Duration",
+                value: `${fcMetrics?.hours ?? "—"} hours`,
+              },
+              {
+                label: "Track Distance",
+                value: `${fcMetrics?.distance_km ?? "—"} km`,
+              },
+            ],
+          },
+        });
+        fcFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "#22d3ee",
+              width: 3.4,
+            }),
+          })
+        );
+        src.addFeature(fcFeat);
+      }
+
+      // C. Dynamic Course-Correction Vectors & Maneuver Callouts (circumventing high-risk ice zones)
+      if (showCourseCorrections && courseCorrections.length > 0) {
+        for (const cc of courseCorrections) {
+          const ccInspect = {
+            kind: "Dynamic Course Correction Maneuver",
+            title: `${cc.id}: ${cc.maneuver}`,
+            subtitle: `${Math.abs(cc.lat).toFixed(2)}°S, ${Math.abs(
+              cc.lon
+            ).toFixed(2)}°E · Voyage T+${cc.hour}h`,
+            metrics: [
+              {
+                label: "Hazard Circumvented",
+                value: `${cc.reason} (+${cc.deviation_km} km lateral offset)`,
+              },
+              {
+                label: "Sea-Ice Exposure Reduction",
+                value: `${Math.round(cc.st_sic * 100)}% SIC → ${Math.round(
+                  cc.fc_sic * 100
+                )}% SIC (-${cc.sic_reduction_pct}%)`,
+              },
+              {
+                label: "New Optimal Heading",
+                value: `COG ${cc.cog_deg}° True`,
+              },
+            ],
+          };
+
+          if (cc.deviation_km >= 18) {
+            const vecFeat = new Feature({
+              geometry: new LineString([
+                [cc.st_x_m, cc.st_y_m],
+                [cc.fc_x_m, cc.fc_y_m],
+              ]),
+              inspect: ccInspect,
+            });
+            vecFeat.setStyle(
+              new Style({
+                stroke: new Stroke({
+                  color: "rgba(251, 191, 36, 0.85)",
+                  width: 1.9,
+                  lineDash: [4, 3],
+                }),
+              })
+            );
+            src.addFeature(vecFeat);
+
+            const dx = cc.fc_x_m - cc.st_x_m;
+            const dy = cc.fc_y_m - cc.st_y_m;
+            const len = Math.hypot(dx, dy) || 1;
+            const ux = dx / len;
+            const uy = dy / len;
+            const ah = 24000;
+            const headFeat = new Feature({
+              geometry: new LineString([
+                [
+                  cc.fc_x_m - ux * ah - uy * (ah * 0.5),
+                  cc.fc_y_m - uy * ah + ux * (ah * 0.5),
+                ],
+                [cc.fc_x_m, cc.fc_y_m],
+                [
+                  cc.fc_x_m - ux * ah + uy * (ah * 0.5),
+                  cc.fc_y_m - uy * ah - ux * (ah * 0.5),
+                ],
+              ]),
+              inspect: ccInspect,
+            });
+            headFeat.setStyle(
+              new Style({
+                stroke: new Stroke({
+                  color: "#fbbf24",
+                  width: 2.2,
+                }),
+              })
+            );
+            src.addFeature(headFeat);
+          }
+
+          const ccNodeFeat = new Feature({
+            geometry: new Point([cc.fc_x_m, cc.fc_y_m]),
+            inspect: ccInspect,
+          });
+          ccNodeFeat.setStyle(
+            new Style({
+              image: new CircleStyle({
+                radius: 5.8,
+                fill: new Fill({ color: "#07090e" }),
+                stroke: new Stroke({ color: "#fbbf24", width: 2.4 }),
+              }),
+              text: new TextStyle({
+                text: `${cc.id} ${cc.maneuver}\n-${cc.sic_reduction_pct}% ICE RISK · COG ${cc.cog_deg}°`,
+                offsetY: -18,
+                font: "600 8.5px 'JetBrains Mono', monospace",
+                fill: new Fill({ color: "#fde68a" }),
+                stroke: new Stroke({ color: "#07090e", width: 3.2 }),
+              }),
+            })
+          );
+          src.addFeature(ccNodeFeat);
+        }
+      }
+
+      // D. Plot Annotated Avoidance Waypoints (WP-1, WP-2, WP-3) along the calculated route
       const waypoints = fcMetrics?.waypoints || [];
       for (const wp of waypoints) {
         if (wp.code === "WP-0" || wp.code === "WP-4") continue;
@@ -1188,7 +1596,7 @@ export default function App() {
                 wp.sic * 100
               )}% SIC`,
               offsetY: 16,
-              font: "600 9px 'JetBrains Mono', monospace",
+              font: "600 8.5px 'JetBrains Mono', monospace",
               fill: new Fill({ color: "#a5f3fc" }),
               stroke: new Stroke({ color: "#07090e", width: 3 }),
             }),
@@ -1197,12 +1605,8 @@ export default function App() {
         src.addFeature(wpFeat);
       }
 
-      // C. Oriented Vessel Hull Marker + Radar Range Ring + Heading Vector (RV POLAR EXPLORER)
-      const leadDay = Math.max(0, timelineStep);
-      const idx = Math.min(
-        fcXy.length - 1,
-        Math.floor((leadDay / 7) * (fcXy.length - 1))
-      );
+      // E. High-Visibility Oriented Vessel Hull Marker + Target Lock Crosshair + Heading Vector (RV POLAR EXPLORER)
+      const idx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
       const shipCoord = fcXy[idx] || fcXy[0];
       const nextCoord = fcXy[Math.min(fcXy.length - 1, idx + 1)] || shipCoord;
       const prevCoord = fcXy[Math.max(0, idx - 1)] || shipCoord;
@@ -1223,9 +1627,9 @@ export default function App() {
       const px = -uy;
       const py = ux;
 
-      // 1. Ship Radar / Safety Surveillance Ring (45 km radius)
+      // 1. Ship Radar / Safety Surveillance Ring (50 km radius)
       const radarRing = [];
-      const radarR = 45000;
+      const radarR = 50000;
       for (let a = 0; a <= 32; a++) {
         const ang = (a / 32) * 2 * Math.PI;
         radarRing.push([
@@ -1238,37 +1642,63 @@ export default function App() {
       });
       radarFeat.setStyle(
         new Style({
-          fill: new Fill({ color: "rgba(6, 182, 212, 0.08)" }),
+          fill: new Fill({ color: "rgba(245, 158, 11, 0.10)" }),
           stroke: new Stroke({
-            color: "rgba(34, 211, 238, 0.55)",
-            width: 1.2,
+            color: "rgba(251, 191, 36, 0.65)",
+            width: 1.4,
             lineDash: [4, 4],
           }),
         })
       );
       src.addFeature(radarFeat);
 
+      // 1b. Target Lock Crosshair Ticks around Ship Location
+      const crossInner = 54000;
+      const crossOuter = 82000;
+      for (const [cxDir, cyDir] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ]) {
+        const tickFeat = new Feature({
+          geometry: new LineString([
+            [shipCoord[0] + cxDir * crossInner, shipCoord[1] + cyDir * crossInner],
+            [shipCoord[0] + cxDir * crossOuter, shipCoord[1] + cyDir * crossOuter],
+          ]),
+        });
+        tickFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "rgba(253, 224, 71, 0.90)",
+              width: 2.0,
+            }),
+          })
+        );
+        src.addFeature(tickFeat);
+      }
+
       // 2. Ship Velocity / Heading Leader Line
       const leaderFeat = new Feature({
         geometry: new LineString([
           shipCoord,
-          [shipCoord[0] + ux * 85000, shipCoord[1] + uy * 85000],
+          [shipCoord[0] + ux * 105000, shipCoord[1] + uy * 105000],
         ]),
       });
       leaderFeat.setStyle(
         new Style({
           stroke: new Stroke({
-            color: "#fbbf24",
-            width: 2.0,
-            lineDash: [4, 3],
+            color: "#fde047",
+            width: 2.2,
+            lineDash: [5, 3],
           }),
         })
       );
       src.addFeature(leaderFeat);
 
       // 3. Oriented Icebreaker Ship Hull Polygon (Bow pointed along course heading)
-      const hullLen = 42000;
-      const hullBeam = 17000;
+      const hullLen = 46000;
+      const hullBeam = 18500;
       const bow = [
         shipCoord[0] + ux * hullLen,
         shipCoord[1] + uy * hullLen,
@@ -1317,7 +1747,7 @@ export default function App() {
       hullFeat.setStyle(
         new Style({
           fill: new Fill({ color: "#f59e0b" }),
-          stroke: new Stroke({ color: "#07090e", width: 2.2 }),
+          stroke: new Stroke({ color: "#07090e", width: 2.4 }),
         })
       );
       src.addFeature(hullFeat);
@@ -1329,23 +1759,121 @@ export default function App() {
       shipLabelFeat.setStyle(
         new Style({
           image: new CircleStyle({
-            radius: 3,
+            radius: 3.5,
             fill: new Fill({ color: "#fef3c7" }),
           }),
           text: new TextStyle({
-            text: `RV POLAR EXPLORER\nCOG ${tel.cog_deg}° · ${tel.speed_kmh} km/h · ${Math.round(
+            text: `SHIP: RV POLAR EXPLORER [${Math.abs(tel.lat).toFixed(1)}°S, ${Math.abs(
+              tel.lon
+            ).toFixed(1)}°E]\nCOG ${tel.cog_deg}° · ${tel.speed_kmh} km/h · ${Math.round(
               tel.sic * 100
             )}% SIC`,
-            offsetY: -22,
+            offsetY: -26,
             font: "600 10px 'JetBrains Mono', monospace",
-            fill: new Fill({ color: "#fde68a" }),
-            stroke: new Stroke({ color: "#07090e", width: 3.4 }),
+            fill: new Fill({ color: "#fde047" }),
+            stroke: new Stroke({ color: "#07090e", width: 3.6 }),
           }),
         })
       );
       src.addFeature(shipLabelFeat);
     }
-  }, [routeData, showRoutes, timelineStep, scenario, wRisk]);
+  }, [
+    routeData,
+    showRoutes,
+    showCourseCorrections,
+    activeShipIdx,
+    scenario,
+    wRisk,
+  ]);
+
+  // 8b. Real-Time Animated Optimal Path Flow Indicator & Expanding Ship Location Sonar Beacon
+  useEffect(() => {
+    const src = pulseSourceRef.current;
+    if (!routeData?.forecast_aware?.xy || !showRoutes) {
+      src.clear();
+      return;
+    }
+
+    let phase = 0;
+    const timer = setInterval(() => {
+      phase = (phase + 0.045) % 1;
+      src.clear();
+
+      const fcXy = routeData.forecast_aware.xy;
+      if (!fcXy || fcXy.length < 2) return;
+
+      const shipIdx = Math.max(0, Math.min(fcXy.length - 1, activeShipIdx));
+      const shipCoord = fcXy[shipIdx];
+
+      // 1. Dual Expanding Sonar Beacon Rings around Ship Location
+      for (let ringIdx = 0; ringIdx < 2; ringIdx++) {
+        const ringPhase = (phase + ringIdx * 0.5) % 1;
+        const radius = 24000 + ringPhase * 92000;
+        const alpha = Math.max(0.05, (1 - ringPhase) * 0.75);
+        const pts = [];
+        for (let a = 0; a <= 32; a++) {
+          const ang = (a / 32) * 2 * Math.PI;
+          pts.push([
+            shipCoord[0] + radius * Math.cos(ang),
+            shipCoord[1] + radius * Math.sin(ang),
+          ]);
+        }
+        const ringFeat = new Feature({
+          geometry: new Polygon([pts]),
+        });
+        ringFeat.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: `rgba(250, 204, 21, ${alpha.toFixed(2)})`,
+              width: 2.0 - ringPhase * 0.8,
+            }),
+          })
+        );
+        src.addFeature(ringFeat);
+      }
+
+      // 2. Real-Time Animated Guidance Chevrons Streaming Along Forward Optimal Navigation Path
+      const forwardCoords = fcXy.slice(shipIdx);
+      if (forwardCoords.length > 2) {
+        const stride = 6;
+        const offset = Math.floor(phase * stride);
+        for (
+          let i = Math.max(1, offset);
+          i < forwardCoords.length - 1;
+          i += stride
+        ) {
+          const [x0, y0] = forwardCoords[i - 1];
+          const [x1, y1] = forwardCoords[i];
+          const dx = x1 - x0;
+          const dy = y1 - y0;
+          const len = Math.hypot(dx, dy);
+          if (len < 1000) continue;
+          const ux = dx / len;
+          const uy = dy / len;
+          const wing = 21000;
+          const chevCoords = [
+            [x1 - ux * wing - uy * (wing * 0.58), y1 - uy * wing + ux * (wing * 0.58)],
+            [x1, y1],
+            [x1 - ux * wing + uy * (wing * 0.58), y1 - uy * wing - ux * (wing * 0.58)],
+          ];
+          const chevFeat = new Feature({
+            geometry: new LineString(chevCoords),
+          });
+          chevFeat.setStyle(
+            new Style({
+              stroke: new Stroke({
+                color: "rgba(165, 243, 252, 0.95)",
+                width: 2.5,
+              }),
+            })
+          );
+          src.addFeature(chevFeat);
+        }
+      }
+    }, 65);
+
+    return () => clearInterval(timer);
+  }, [routeData, showRoutes, activeShipIdx]);
 
   // 9. Update Real-World Tabular Icebergs, Past Scatterometer Tracks, 7-Day Predicted Paths & Swept Cones
   useEffect(() => {
@@ -2008,8 +2536,18 @@ export default function App() {
                 checked={showRoutes}
                 onChange={(e) => setShowRoutes(e.target.checked)}
               />
-              <span>Ship Avoidance &amp; Baseline Paths</span>
+              <span>Optimal Path &amp; Real-Time Flow</span>
               <span className="dss-radio-meta">Live A*</span>
+            </label>
+
+            <label className="dss-check-row">
+              <input
+                type="checkbox"
+                checked={showCourseCorrections}
+                onChange={(e) => setShowCourseCorrections(e.target.checked)}
+              />
+              <span>Dynamic Course Corrections &amp; Hazards</span>
+              <span className="dss-radio-meta">CC-1..4</span>
             </label>
 
             <label className="dss-check-row">
@@ -2059,19 +2597,19 @@ export default function App() {
             </div>
             <div className="dss-legend-lines">
               <div>
-                <span className="line-swatch cyan" /> Calculated ship avoidance path (A*)
+                <span className="line-swatch cyan" /> Optimal ship path + live flow chevrons
+              </div>
+              <div>
+                <span className="line-swatch amber" /> Dynamic course-correction vector (CC)
               </div>
               <div>
                 <span className="line-swatch dashed" /> Naive climatology path
               </div>
               <div>
-                <span className="line-swatch rose" /> Heavy pack-ice trap (≥40% SIC)
+                <span className="line-swatch rose" /> Projected high-risk ice zone (≥40% SIC)
               </div>
               <div>
                 <span className="line-swatch sky-dashed" /> Predicted 15% ice-edge contour
-              </div>
-              <div>
-                <span className="line-swatch amber" /> Tabular berg 7-day path + cone
               </div>
             </div>
           </section>
@@ -2099,7 +2637,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Floating Real-World Sector Camera Presets Bar */}
+          {/* Floating Real-World Sector Camera Presets & Ship Location Lock Bar */}
           <div className="dss-map-camera-bar" role="group" aria-label="Chart Sector Presets">
             <button
               type="button"
@@ -2124,14 +2662,144 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => handleFocusMapSector("ship")}
-              title="Center camera on RV Polar Explorer along calculated avoidance path"
+              className="dss-cam-btn-ship"
+              onClick={() => handleZoomToShip(true)}
+              title="Zoom closely to RV Polar Explorer's current coordinates on the chart"
             >
-              Focus Ship
+              Zoom to Ship
+            </button>
+            <button
+              type="button"
+              className={autoFollowShip ? "active" : ""}
+              onClick={() => {
+                const next = !autoFollowShip;
+                setAutoFollowShip(next);
+                if (next) handleZoomToShip(false);
+              }}
+              title="Keep map camera continuously locked onto RV Polar Explorer as it transits"
+            >
+              {autoFollowShip ? "Following Ship [ON]" : "Follow Ship"}
+            </button>
+            <button
+              type="button"
+              className={showShipBridge ? "active" : ""}
+              onClick={() => setShowShipBridge(!showShipBridge)}
+              title="Toggle Live Ship Bridge & 220 km Tactical Local Ice Radar Scope"
+            >
+              {showShipBridge ? "Hide Ship Radar" : "Show Ship Radar"}
             </button>
           </div>
 
           <div ref={mapContainerRef} className="dss-map" />
+
+          {/* Live Ship Location & Tactical Local Ice Radar HUD */}
+          {showShipBridge && activeShipTelemetry && (
+            <div className="dss-ship-bridge-hud">
+              <div className="dss-sb-head">
+                <div>
+                  <span className="dss-sb-tag">
+                    LIVE VESSEL LOCATION &amp; TACTICAL RADAR
+                  </span>
+                  <h3>
+                    {scenario?.ship?.name || "RV Polar Explorer"}{" "}
+                    <span className="mono">
+                      ({Math.abs(activeShipTelemetry.lat).toFixed(2)}°S,{" "}
+                      {Math.abs(activeShipTelemetry.lon).toFixed(2)}°E)
+                    </span>
+                  </h3>
+                </div>
+                <div className="dss-sb-actions">
+                  <button
+                    type="button"
+                    onClick={() => handleZoomToShip(true)}
+                    title="Center and zoom map onto ship"
+                  >
+                    Center Map
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowShipBridge(false)}
+                    aria-label="Minimize ship radar HUD"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+
+              <div className="dss-sb-body">
+                <ShipBridgeScope
+                  shipTel={activeShipTelemetry}
+                  fcPath={routeData?.forecast_aware?.xy}
+                  stPath={routeData?.static?.xy}
+                  activeSlice={activeSliceRef.current}
+                  extent={scenario?.extent}
+                  shape={scenario?.shape}
+                />
+
+                <div className="dss-sb-readout">
+                  <div className="dss-sb-grid">
+                    <div>
+                      <span>GEOGRAPHIC POS</span>
+                      <strong className="mono">
+                        {Math.abs(activeShipTelemetry.lat).toFixed(2)}°S,{" "}
+                        {Math.abs(activeShipTelemetry.lon).toFixed(2)}°E
+                      </strong>
+                    </div>
+                    <div>
+                      <span>HEADING / SPEED</span>
+                      <strong className="mono">
+                        COG {activeShipTelemetry.cog_deg}° ·{" "}
+                        {activeShipTelemetry.speed_kmh} km/h
+                      </strong>
+                    </div>
+                    <div>
+                      <span>LOCAL ICE (SIC)</span>
+                      <strong
+                        className={`mono ${
+                          activeShipTelemetry.sic >= 0.35
+                            ? "warn-text"
+                            : "cyan-text"
+                        }`}
+                      >
+                        {(activeShipTelemetry.sic * 100).toFixed(1)}% SIC
+                      </strong>
+                    </div>
+                    <div>
+                      <span>VOYAGE ELAPSED</span>
+                      <strong className="mono">
+                        T+{Math.round(activeShipTelemetry.hour)}h (
+                        {activeShipTelemetry.progressPct}%)
+                      </strong>
+                    </div>
+                  </div>
+
+                  {/* Interactive Ship Location Scrubber along Optimal Path */}
+                  <div className="dss-sb-scrubber">
+                    <div className="dss-sb-scrub-head">
+                      <span>Scrub Ship Position Along Optimal Path</span>
+                      {shipStepIdx !== null && (
+                        <button
+                          type="button"
+                          onClick={() => setShipStepIdx(null)}
+                        >
+                          Sync to Timeline
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={Math.max(1, activeShipTelemetry.totalSteps - 1)}
+                      value={activeShipTelemetry.idx}
+                      onChange={(e) =>
+                        setShipStepIdx(Number(e.target.value))
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Interactive Click-to-Inspect Feature Telemetry Card */}
           {selectedTarget && (
@@ -2381,42 +3049,108 @@ export default function App() {
             )}
           </section>
 
-          {/* 03. Calculated Ship Avoidance Waypoints Log */}
-          {fcMetrics?.waypoints?.length > 0 && (
+          {/* 03. Dynamic Course Corrections & Ship Avoidance Waypoints Log */}
+          {(routeData?.course_corrections?.length > 0 ||
+            fcMetrics?.waypoints?.length > 0) && (
             <section className="dss-panel">
               <div className="dss-panel-head">
-                <h2>03. Ship Avoidance Waypoint Log</h2>
+                <h2>03. Dynamic Course Corrections</h2>
               </div>
               <p className="dss-meta-line">
-                <span>Calculated A* course bypassing bergs &amp; ≥40% pack</span>
+                <span>
+                  Real-time maneuvers circumventing projected ≥40% ice &amp; bergs
+                </span>
               </p>
-              <div className="dss-wp-list">
-                {fcMetrics.waypoints.map((wp) => (
-                  <div
-                    key={wp.code}
-                    className="dss-wp-row"
-                    onClick={() => {
-                      if (mapRef.current) {
-                        mapRef.current
-                          .getView()
-                          .animate({ center: [wp.x_m, wp.y_m], duration: 300 });
-                      }
-                    }}
-                  >
-                    <div className="dss-wp-main">
-                      <strong>{wp.label}</strong>
-                      <span className="mono">
-                        {Math.abs(wp.lat).toFixed(1)}°S, {Math.abs(wp.lon).toFixed(1)}°E · COG{" "}
-                        {wp.cog_deg}°
-                      </span>
+
+              {routeData?.course_corrections?.length > 0 && (
+                <div className="dss-cc-list">
+                  {routeData.course_corrections.map((cc) => (
+                    <div
+                      key={cc.id}
+                      className="dss-cc-card"
+                      onClick={() => {
+                        setShipStepIdx(cc.step_index);
+                        if (mapRef.current) {
+                          mapRef.current.getView().animate({
+                            center: [cc.fc_x_m, cc.fc_y_m],
+                            zoom: 4.1,
+                            duration: 380,
+                          });
+                        }
+                        setSelectedTarget({
+                          kind: "Dynamic Course Correction Maneuver",
+                          title: `${cc.id}: ${cc.maneuver}`,
+                          subtitle: `${Math.abs(cc.lat).toFixed(2)}°S, ${Math.abs(
+                            cc.lon
+                          ).toFixed(2)}°E · Voyage T+${cc.hour}h`,
+                          metrics: [
+                            {
+                              label: "Hazard Circumvented",
+                              value: `${cc.reason} (+${cc.deviation_km} km offset)`,
+                            },
+                            {
+                              label: "Local Ice Risk Reduction",
+                              value: `${Math.round(cc.st_sic * 100)}% → ${Math.round(
+                                cc.fc_sic * 100
+                              )}% SIC (-${cc.sic_reduction_pct}%)`,
+                            },
+                            {
+                              label: "New Optimal Heading",
+                              value: `COG ${cc.cog_deg}° True`,
+                            },
+                          ],
+                        });
+                      }}
+                    >
+                      <div className="dss-cc-top">
+                        <span className="dss-cc-badge">{cc.id}</span>
+                        <strong className="dss-cc-maneuver">
+                          {cc.maneuver}
+                        </strong>
+                        <span className="dss-cc-delta mono">
+                          -{cc.sic_reduction_pct}% SIC
+                        </span>
+                      </div>
+                      <div className="dss-cc-sub">
+                        <span>{cc.reason}</span>
+                        <span className="mono">
+                          T+{cc.hour}h · COG {cc.cog_deg}°
+                        </span>
+                      </div>
                     </div>
-                    <div className="dss-wp-right mono">
-                      <span>T+{Math.round(wp.hour)}h</span>
-                      <small>{Math.round(wp.sic * 100)}% SIC</small>
+                  ))}
+                </div>
+              )}
+
+              {fcMetrics?.waypoints?.length > 0 && (
+                <div className="dss-wp-list">
+                  {fcMetrics.waypoints.map((wp) => (
+                    <div
+                      key={wp.code}
+                      className="dss-wp-row"
+                      onClick={() => {
+                        if (mapRef.current) {
+                          mapRef.current
+                            .getView()
+                            .animate({ center: [wp.x_m, wp.y_m], duration: 300 });
+                        }
+                      }}
+                    >
+                      <div className="dss-wp-main">
+                        <strong>{wp.label}</strong>
+                        <span className="mono">
+                          {Math.abs(wp.lat).toFixed(1)}°S,{" "}
+                          {Math.abs(wp.lon).toFixed(1)}°E · COG {wp.cog_deg}°
+                        </span>
+                      </div>
+                      <div className="dss-wp-right mono">
+                        <span>T+{Math.round(wp.hour)}h</span>
+                        <small>{Math.round(wp.sic * 100)}% SIC</small>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
 
