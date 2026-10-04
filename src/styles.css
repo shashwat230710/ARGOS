@@ -3878,4 +3878,354 @@ td.neg {
   }
 }
 
+/* ==========================================================================
+   SIH 26059 — ML Iceberg Caution & Navigation Decision-Support Integration
+   ========================================================================== */
+
+.dss-ship-anim-telemetry {
+  grid-template-columns: repeat(2, 1fr) !important;
+}
+
+/* Top Map Pipeline Strip: Environmental Inputs -> ML Caution -> Route Decision */
+.dss-ml-pipeline-bar {
+  position: absolute;
+  top: 56px;
+  left: 14px;
+  right: 14px;
+  z-index: 26;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 12px;
+  background: rgba(7, 11, 20, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.dss-mlp-steps {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dss-mlp-step {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.dss-mlp-tag {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #38bdf8;
+}
+
+.dss-mlp-step strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f8fafc;
+  white-space: nowrap;
+}
+
+.dss-mlp-arrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.65);
+}
+
+.dss-mlp-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.dss-mlp-btn {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  color: #bae6fd;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.dss-mlp-btn:hover {
+  border-color: #38bdf8;
+  color: #ffffff;
+}
+
+.dss-mlp-btn.active {
+  background: #06b6d4;
+  border-color: #67e8f9;
+  color: #041019;
+}
+
+/* Left Panel: Live ML Iceberg Caution Watch Cards */
+.dss-ml-berg-watch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dss-ml-berg-card {
+  padding: 8px 9px;
+  background: rgba(11, 18, 31, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.dss-ml-berg-card:hover {
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(15, 25, 42, 0.95);
+}
+
+.dss-ml-berg-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.dss-ml-berg-top strong {
+  font-size: 11.5px;
+  color: #f8fafc;
+}
+
+.dss-caution-pill {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+}
+
+.dss-caution-pill.level-critical {
+  background: rgba(244, 63, 94, 0.22);
+  border: 1px solid rgba(244, 63, 94, 0.65);
+  color: #fda4af;
+}
+
+.dss-caution-pill.level-high {
+  background: rgba(251, 146, 60, 0.22);
+  border: 1px solid rgba(251, 146, 60, 0.65);
+  color: #fdba74;
+}
+
+.dss-caution-pill.level-caution {
+  background: rgba(251, 191, 36, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  color: #fde68a;
+}
+
+.dss-caution-pill.level-low {
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.55);
+  color: #6ee7b7;
+}
+
+.dss-ml-berg-reason {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: #cbd5e1;
+  margin-bottom: 5px;
+}
+
+.dss-ml-berg-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 9.5px;
+  color: #94a3b8;
+}
+
+/* Right Panel: ML Iceberg Caution & Route Decision Explainability Block */
+.dss-ml-route-decision-box {
+  margin-top: 10px;
+  padding: 10px 11px;
+  background: rgba(8, 15, 28, 0.92);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.dss-ml-rd-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dss-ml-rd-eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #38bdf8;
+  margin-bottom: 2px;
+}
+
+.dss-ml-rd-head h3 {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.dss-ml-rd-conf {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(6, 182, 212, 0.16);
+  border: 1px solid rgba(34, 211, 238, 0.45);
+  color: #67e8f9;
+  white-space: nowrap;
+}
+
+.dss-ml-rd-explain {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #cbd5e1;
+  margin: 0;
+}
+
+.dss-ml-rd-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 7px 8px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 4px;
+}
+
+.dss-ml-rd-kpis > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dss-ml-rd-kpis span {
+  font-size: 9px;
+  color: #94a3b8;
+}
+
+.dss-ml-rd-kpis strong {
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.dss-ml-attr-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.dss-ml-attr-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dss-ml-attr-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dss-ml-attr-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: #e2e8f0;
+}
+
+.dss-ml-attr-bar {
+  width: 100%;
+  height: 5px;
+  background: rgba(30, 41, 59, 0.85);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dss-ml-attr-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #06b6d4, #f59e0b);
+  border-radius: 3px;
+}
+
+.dss-ml-cc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.dss-ml-cc-item {
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.dss-ml-cc-item:hover {
+  border-color: #fbbf24;
+  background: rgba(30, 41, 59, 0.95);
+}
+
+.dss-ml-cc-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10.5px;
+  color: #fde68a;
+  margin-bottom: 2px;
+}
+
+.dss-ml-cc-sub {
+  display: block;
+  font-size: 10px;
+  color: #cbd5e1;
+  line-height: 1.3;
+}
+
+@media (max-width: 1100px) {
+  .dss-ml-pipeline-bar {
+    display: none;
+  }
+}
+
+
 

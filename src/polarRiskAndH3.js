@@ -371,6 +371,7 @@ export function computePolarRiskFields({
   scenario,
   sicSlice,
   uncertaintyGrid,
+  mlCautionSlice = null,
   elevationGrid,
   surfaceTypeGrid,
   icebergs,
@@ -385,6 +386,7 @@ export function computePolarRiskFields({
 
   const sicData = sicSlice.data;
   const uncData = uncertaintyGrid?.data || null;
+  const mlCautionData = mlCautionSlice?.data || null;
   const elevData = elevationGrid?.data || null;
   const surfData = surfaceTypeGrid?.data || null;
 
@@ -525,7 +527,11 @@ export function computePolarRiskFields({
         wDenom += w;
       }
       nearestBergDistKm[idx] = minBergKm;
-      icebergRisk[idx] = Math.min(0.96, rBerg);
+      const rBergModel =
+        mlCautionData && mlCautionData.length === N
+          ? Math.max(rBerg, mlCautionData[idx])
+          : rBerg;
+      icebergRisk[idx] = Math.min(0.98, rBergModel);
 
       const cR = Math.min(W - 1, c + 1);
       const rD = Math.min(H - 1, r + 1);
@@ -586,9 +592,9 @@ export function computePolarRiskFields({
       oceanRisk[idx] = rOcean;
 
       // 5. COMBINED POLAR RISK MAP
-      const dominantHazard = Math.max(rIce, rBerg);
+      const dominantHazard = Math.max(rIce, rBergModel);
       const weightedMean =
-        0.48 * rIce + 0.24 * rBerg + 0.14 * rWeather + 0.14 * rOcean;
+        0.48 * rIce + 0.24 * rBergModel + 0.14 * rWeather + 0.14 * rOcean;
       combinedRisk[idx] = Math.min(
         0.98,
         Math.max(dominantHazard * 0.92, weightedMean)

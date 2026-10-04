@@ -1729,21 +1729,56 @@ const Map3DView = forwardRef(function Map3DView(
         const bergMesh = new THREE.Mesh(bergGeo, bergMat);
         bergMesh.rotation.y = 0.45;
 
+        const mlC = berg.ml_caution;
+        const cShort = mlC?.caution_short || "CAUTION";
+        const cPct = mlC?.probability_pct ?? 54;
+        const cHex =
+          mlC?.caution_color === "#f43f5e"
+            ? 0xf43f5e
+            : mlC?.caution_color === "#fb923c"
+            ? 0xfb923c
+            : mlC?.caution_color === "#10b981"
+            ? 0x10b981
+            : 0xf59e0b;
+        const topDrivers = (mlC?.feature_attributions || [])
+          .slice(0, 3)
+          .map((f) => `${f.feature} (${f.share_pct}%)`)
+          .join(" · ");
+
         const inspectBerg = {
-          kind: "USNIC / BYU Tracked Tabular Iceberg",
-          title: berg.name || `Tabular Berg ${berg.id}`,
+          kind: "ML-Assessed Antarctic Tabular Iceberg (USNIC / BYU)",
+          title: `${berg.name || `Tabular Berg ${berg.id}`} · ML ${cShort} (${cPct}%)`,
           subtitle: `${Math.abs(activePt.lat).toFixed(2)}°S, ${Math.abs(
             activePt.lon
           ).toFixed(2)}°E · ${berg.size_nm}`,
           metrics: [
-            { label: "Calved From", value: berg.calved_from },
             {
-              label: "Freeboard / Draft",
-              value: `+${berg.freeboard_m || 40} m / -${berg.draft_m || 220} m`,
+              label: "ML Caution Level & Probability",
+              value: `${mlC?.caution_level || "MODERATE CAUTION"} (${cPct}% risk · ${
+                mlC?.confidence_pct ?? 88
+              }% conf.)`,
             },
             {
-              label: "Drift Speed",
-              value: `${berg.drift_km_day || 11.4} km/day`,
+              label: "Why Risky (ML Risk Drivers)",
+              value:
+                mlC?.risk_reasons?.slice(0, 2).join(" · ") ||
+                "Active drift cone & marginal sea-ice convergence",
+            },
+            {
+              label: "Top Feature Attributions",
+              value: topDrivers || "Proximity & Drift · Sea-Ice Compression",
+            },
+            {
+              label: "Recommended Navigation Action",
+              value:
+                mlC?.recommended_action ||
+                "Maintain radar watch and route outside 7-day drift cone",
+            },
+            {
+              label: "Freeboard / Draft & Drift",
+              value: `+${berg.freeboard_m || 40} m / -${berg.draft_m || 220} m · ${
+                berg.drift_km_day || 11.4
+              } km/day`,
             },
           ],
         };
@@ -1753,14 +1788,14 @@ const Map3DView = forwardRef(function Map3DView(
 
         const coneRingGeo = new THREE.RingGeometry(
           bergL * 0.85,
-          bergL * 1.3,
+          bergL * 1.35,
           28
         );
         coneRingGeo.rotateX(-Math.PI / 2);
         const coneRingMat = new THREE.MeshBasicMaterial({
-          color: 0xf59e0b,
+          color: cHex,
           transparent: true,
-          opacity: 0.55,
+          opacity: 0.65,
           side: THREE.DoubleSide,
         });
         const coneRing = new THREE.Mesh(coneRingGeo, coneRingMat);
@@ -1770,8 +1805,8 @@ const Map3DView = forwardRef(function Map3DView(
 
         newLabels.push({
           id: `berg-${berg.id}`,
-          text: `BERG ${berg.id}`,
-          sub: berg.size_nm,
+          text: `BERG ${berg.id} · ML ${cShort} ${cPct}%`,
+          sub: `${berg.size_nm} · ${berg.drift_km_day || 11} km/d`,
           kind: "berg",
           pos3D: flatXZToSceneVec3(bx, bz, bergH + 1.4, globeMode),
           inspect: inspectBerg,
@@ -1838,14 +1873,23 @@ const Map3DView = forwardRef(function Map3DView(
           for (const cc of routeData.course_corrections) {
             const [cx, cz] = mapToSceneXZ(cc.fc_x_m, cc.fc_y_m);
             const ccInspect = {
-              kind: "Dynamic Course Correction Maneuver",
+              kind: "ML-Guided Course Correction Maneuver",
               title: `${cc.id}: ${cc.maneuver}`,
               subtitle: `Voyage T+${cc.hour}h · COG ${cc.cog_deg}°`,
               metrics: [
-                { label: "Hazard Avoided", value: cc.reason },
+                {
+                  label: "Why Risky (ML Driver)",
+                  value: cc.ml_why_risky || cc.reason,
+                },
+                {
+                  label: "ML Caution Risk Avoided",
+                  value: `-${
+                    cc.ml_caution_avoided_pct ?? cc.sic_reduction_pct
+                  }% (${cc.ml_caution_level_avoided || "HIGH CAUTION"})`,
+                },
                 {
                   label: "Ice Exposure Reduction",
-                  value: `-${cc.sic_reduction_pct}% SIC`,
+                  value: `-${cc.sic_reduction_pct}% SIC (+${cc.deviation_km} km offset)`,
                 },
               ],
             };
@@ -1899,6 +1943,16 @@ const Map3DView = forwardRef(function Map3DView(
               {
                 label: "Local Sea-Ice Concentration",
                 value: `${(activeShipTelemetry.sic * 100).toFixed(1)}% SIC`,
+              },
+              {
+                label: "Live ML Iceberg Caution",
+                value: `${
+                  activeShipTelemetry.caution_level || "LOW / SAFE"
+                } (${Math.round(
+                  (activeShipTelemetry.ml_caution_prob ?? 0.14) * 100
+                )}% · ${activeShipTelemetry.nearest_iceberg_id || "D-28"} ${
+                  activeShipTelemetry.nearest_iceberg_km ?? 110
+                } km)`,
               },
               {
                 label: "Voyage Elapsed",

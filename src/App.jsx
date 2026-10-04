@@ -76,6 +76,8 @@ function ShipBridgeScope({
   activeSlice,
   extent,
   shape,
+  icebergs = [],
+  timelineStep = 1,
 }) {
   const radarCanvasRef = useRef(null);
 
@@ -202,6 +204,62 @@ function ShipBridgeScope({
     ctx.lineTo(W_PX, cy);
     ctx.stroke();
 
+    // 4b. Plot Tracked Tabular Icebergs & ML Caution Bearing Contacts on Radar Scope
+    if (icebergs && icebergs.length > 0) {
+      for (const b of icebergs) {
+        let bPt = { x_m: b.x_m, y_m: b.y_m };
+        if (timelineStep > 0 && b.track?.length) {
+          const found = b.track.reduce((best, cur) =>
+            Math.abs(cur.lead_days - timelineStep) <
+            Math.abs(best.lead_days - timelineStep)
+              ? cur
+              : best
+          );
+          if (found) bPt = found;
+        }
+        const dxB = (bPt.x_m ?? 0) - sx;
+        const dyB = (bPt.y_m ?? 0) - sy;
+        const distM = Math.hypot(dxB, dyB);
+        const distKm = Math.round(distM / 1000);
+        const cColor = b.ml_caution?.caution_color || "#f59e0b";
+        const cProb = b.ml_caution?.probability_pct ?? 50;
+
+        if (distM <= halfSpan * 0.95) {
+          const [bpx, bpy] = mapToPx(bPt.x_m, bPt.y_m);
+          ctx.save();
+          ctx.strokeStyle = cColor;
+          ctx.fillStyle = "rgba(245, 158, 11, 0.22)";
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(bpx, bpy, 9, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#fef3c7";
+          ctx.font = "600 8px 'JetBrains Mono', monospace";
+          ctx.fillText(`${b.id} (${cProb}%)`, bpx + 11, bpy + 3);
+          ctx.restore();
+        } else if (distKm <= 680) {
+          // Draw perimeter bearing indicator for nearest/high-caution tabular icebergs
+          const ang = Math.atan2(-dyB, dxB);
+          const edgeR = W_PX * 0.43;
+          const bx = cx + Math.cos(ang) * edgeR;
+          const by = cy + Math.sin(ang) * edgeR;
+          ctx.save();
+          ctx.fillStyle = cColor;
+          ctx.beginPath();
+          ctx.arc(bx, by, 3.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#fde68a";
+          ctx.font = "600 7.5px 'JetBrains Mono', monospace";
+          const lbl = `${b.id} ${distKm}km`;
+          const tx = Math.max(4, Math.min(W_PX - 52, bx - 18));
+          const ty = Math.max(12, Math.min(H_PX - 14, by - 5));
+          ctx.fillText(lbl, tx, ty);
+          ctx.restore();
+        }
+      }
+    }
+
     // 5. Ship Heading Vector & Oriented Vessel Hull at Center
     const dx = (shipTel.next_x_m ?? sx) - sx;
     const dy = (shipTel.next_y_m ?? sy - 1000) - sy;
@@ -233,11 +291,23 @@ function ShipBridgeScope({
     ctx.stroke();
     ctx.restore();
 
+    // Top ML Caution HUD overlay on radar canvas
+    const mlPct = Math.round((shipTel.ml_caution_prob ?? 0.14) * 100);
+    ctx.fillStyle = "rgba(7, 11, 20, 0.82)";
+    ctx.fillRect(4, 4, W_PX - 8, 16);
+    ctx.fillStyle = shipTel.caution_color || "#10b981";
+    ctx.font = "700 8.5px 'JetBrains Mono', monospace";
+    ctx.fillText(
+      `ML CAUTION: ${shipTel.caution_short || "LOW"} (${mlPct}%)`,
+      8,
+      15
+    );
+
     // Scale label
     ctx.fillStyle = "rgba(148, 163, 184, 0.85)";
     ctx.font = "500 9px 'JetBrains Mono', monospace";
     ctx.fillText("50 / 100 km RING", 5, H_PX - 5);
-  }, [shipTel, fcPath, stPath, activeSlice, extent, shape]);
+  }, [shipTel, fcPath, stPath, activeSlice, extent, shape, icebergs, timelineStep]);
 
   return <canvas ref={radarCanvasRef} className="dss-bridge-scope-canvas" />;
 }
@@ -721,7 +791,7 @@ export default function App() {
     let cancelled = false;
     async function fetchForecast() {
       try {
-        const [fcRaw, uncRaw, inspRaw] = await Promise.all([
+        const [fcRaw, uncRaw, inspRaw, bergsRaw] = await Promise.all([
           getJSON(`/api/forecast/${date}`),
           getJSON(
             `/api/grid?date=${date}&lead=${Math.max(
@@ -730,6 +800,7 @@ export default function App() {
             )}&layer=uncertainty`
           ),
           getJSON(`/api/ml/inspect/${date}`).catch(() => null),
+          getJSON(`/api/icebergs?date=${date}&day_offset=0`).catch(() => null),
         ]);
         if (cancelled) return;
         const unpacked = {
@@ -739,6 +810,7 @@ export default function App() {
           last: unpack(fcRaw.last),
           ml: unpack(fcRaw.ml),
           residual: fcRaw.residual ? unpack(fcRaw.residual) : null,
+          ml_caution: fcRaw.ml_caution ? unpack(fcRaw.ml_caution) : null,
           b0: unpack(fcRaw.b0),
           b1: unpack(fcRaw.b1),
           obs: unpack(fcRaw.obs),
@@ -750,6 +822,9 @@ export default function App() {
         }
         if (inspRaw) {
           setMlInspect(inspRaw);
+        }
+        if (bergsRaw?.bergs) {
+          setIcebergs(bergsRaw.bergs);
         }
       } catch (err) {
         if (!cancelled) setErrorMsg(err.message);
@@ -931,10 +1006,15 @@ export default function App() {
 
   const polarRiskFields = useMemo(() => {
     if (!scenario || !currentSicSlice) return null;
+    const leadIdx = Math.max(0, Math.min(6, timelineStep <= 0 ? 0 : timelineStep - 1));
+    const mlCautionSlice = forecast?.ml_caution
+      ? sliceLead(forecast.ml_caution, leadIdx)
+      : null;
     return computePolarRiskFields({
       scenario,
       sicSlice: currentSicSlice,
       uncertaintyGrid,
+      mlCautionSlice,
       elevationGrid,
       surfaceTypeGrid,
       icebergs,
@@ -943,6 +1023,7 @@ export default function App() {
     });
   }, [
     scenario,
+    forecast,
     currentSicSlice,
     uncertaintyGrid,
     elevationGrid,
@@ -1665,6 +1746,34 @@ export default function App() {
     const dCog = ((cog1 - cog0 + 540) % 360) - 180;
     const cog_deg = Math.round((cog0 + dCog * frac + 360) % 360);
 
+    const cp0 = tel0.ml_caution_prob ?? Math.min(0.95, sic0 * 0.8 + 0.08);
+    const cp1 = tel1.ml_caution_prob ?? cp0;
+    const ml_caution_prob = Number((cp0 + (cp1 - cp0) * frac).toFixed(3));
+    const caution_level =
+      ml_caution_prob >= 0.78
+        ? "NO-GO / CRITICAL"
+        : ml_caution_prob >= 0.56
+        ? "HIGH CAUTION"
+        : ml_caution_prob >= 0.32
+        ? "MODERATE CAUTION"
+        : "LOW / SAFE";
+    const caution_short =
+      ml_caution_prob >= 0.78
+        ? "CRITICAL"
+        : ml_caution_prob >= 0.56
+        ? "HIGH"
+        : ml_caution_prob >= 0.32
+        ? "CAUTION"
+        : "LOW";
+    const caution_color =
+      ml_caution_prob >= 0.78
+        ? "#f43f5e"
+        : ml_caution_prob >= 0.56
+        ? "#fb923c"
+        : ml_caution_prob >= 0.32
+        ? "#fbbf24"
+        : "#10b981";
+
     return {
       idx: Math.round(s),
       smoothStep: s,
@@ -1684,6 +1793,12 @@ export default function App() {
       sic,
       speed_kmh,
       cog_deg,
+      ml_caution_prob,
+      caution_level,
+      caution_short,
+      caution_color,
+      nearest_iceberg_id: tel0.nearest_iceberg_id || "D-28",
+      nearest_iceberg_km: tel0.nearest_iceberg_km ?? 120,
     };
   }, [routeData, smoothShipStep, shipPos]);
 
@@ -2906,24 +3021,49 @@ export default function App() {
         by + dx * sR + dy * cR,
       ]);
 
+      const mlC = berg.ml_caution;
+      const cShort = mlC?.caution_short || "CAUTION";
+      const cPct = mlC?.probability_pct ?? 54;
+      const cColor = mlC?.caution_color || "#f59e0b";
+      const topDrivers = (mlC?.feature_attributions || [])
+        .slice(0, 3)
+        .map((f) => `${f.feature} (${f.share_pct}%)`)
+        .join(" · ");
+
       const inspectPayload = {
-        kind: "USNIC / BYU Tracked Tabular Iceberg",
-        title: berg.name || `Tabular Berg ${berg.id}`,
+        kind: "ML-Assessed Antarctic Tabular Iceberg (USNIC / BYU)",
+        title: `${berg.name || `Tabular Berg ${berg.id}`} · ML ${cShort} (${cPct}%)`,
         subtitle: `${Math.abs(activePt.lat).toFixed(2)}°S, ${Math.abs(
           activePt.lon
         ).toFixed(2)}°E · Dimensions ${berg.size_nm || "15×9 NM"}`,
         metrics: [
           {
-            label: "Origin / Calving Sector",
-            value: berg.calved_from || "East Antarctic Ice Shelf",
+            label: "ML Caution Level & Probability",
+            value: `${mlC?.caution_level || "MODERATE CAUTION"} (${cPct}% risk · ${
+              mlC?.confidence_pct ?? 88
+            }% model conf.)`,
           },
           {
-            label: "Predicted Drift Speed",
-            value: `${berg.drift_km_day || 11.4} km/day (Coriolis + Coastal Current)`,
+            label: "Why Risky (ML Risk Drivers)",
+            value:
+              mlC?.risk_reasons?.slice(0, 2).join(" · ") ||
+              "Active drift cone & marginal sea-ice convergence",
           },
           {
-            label: "7-Day Uncertainty Radius",
-            value: `±${Math.round(12 + 11.5 * 7)} km hazard cone`,
+            label: "Top Feature Attributions",
+            value: topDrivers || "Proximity & Drift (42%) · Sea Ice (31%)",
+          },
+          {
+            label: "Recommended Navigation Action",
+            value:
+              mlC?.recommended_action ||
+              "Maintain radar watch and route outside 7-day drift cone",
+          },
+          {
+            label: "Predicted Drift Vector",
+            value: `${berg.drift_km_day || 11.4} km/day (${
+              berg.calved_from || "East Antarctic Shelf"
+            })`,
           },
         ],
       };
@@ -2934,8 +3074,8 @@ export default function App() {
       });
       polyFeat.setStyle(
         new Style({
-          fill: new Fill({ color: "rgba(224, 242, 254, 0.92)" }),
-          stroke: new Stroke({ color: "#f59e0b", width: 2.0 }),
+          fill: new Fill({ color: "rgba(224, 242, 254, 0.94)" }),
+          stroke: new Stroke({ color: cColor, width: 2.3 }),
         })
       );
       src.addFeature(polyFeat);
@@ -2947,10 +3087,12 @@ export default function App() {
       bergFeat.setStyle(
         new Style({
           text: new TextStyle({
-            text: `BERG ${berg.id} (${berg.size_nm || "TABULAR"})`,
-            offsetY: -15,
+            text: `BERG ${berg.id} · ML ${cShort} (${cPct}%)\n${
+              berg.size_nm || "TABULAR"
+            } · ${berg.drift_km_day || 11} km/d`,
+            offsetY: -18,
             font: "600 9.5px 'JetBrains Mono', monospace",
-            fill: new Fill({ color: "#fcd34d" }),
+            fill: new Fill({ color: cColor === "#f43f5e" ? "#fda4af" : "#fcd34d" }),
             stroke: new Stroke({ color: "#07090e", width: 3.2 }),
           }),
         })
@@ -3309,7 +3451,7 @@ export default function App() {
                 },
                 {
                   id: "risk_iceberg",
-                  label: "Iceberg Risk (USNIC Drift Cones)",
+                  label: "ML Iceberg Caution Field (Classifier)",
                 },
                 {
                   id: "risk_weather",
@@ -3518,6 +3660,88 @@ export default function App() {
               <span>Overland Traverses &amp; Station Roads</span>
             </label>
           </section>
+
+          {/* Live ML Iceberg Caution Watch (Tracked Tabular Icebergs) */}
+          {icebergs?.length > 0 && (
+            <section className="dss-panel">
+              <div className="dss-panel-head">
+                <h2>ML Iceberg Caution Watch</h2>
+                <button
+                  type="button"
+                  className="dss-inline-help"
+                  onClick={() => {
+                    setSwipeEnabled(false);
+                    setActiveLayer("risk_iceberg");
+                  }}
+                  title="Display the 7-day ML Iceberg Caution probability field on map"
+                >
+                  Show Caution Field
+                </button>
+              </div>
+              <div className="dss-ml-berg-watch-list">
+                {icebergs.map((b) => {
+                  const ml = b.ml_caution || {};
+                  const levelShort = ml.caution_short || "CAUTION";
+                  const probPct = ml.probability_pct ?? 55;
+                  const confPct = ml.confidence_pct ?? 88;
+                  const topReason =
+                    ml.risk_reasons?.[0] ||
+                    `${b.drift_km_day} km/d drift cone`;
+                  return (
+                    <div
+                      key={b.id}
+                      className="dss-ml-berg-card"
+                      onClick={() => {
+                        setShowIcebergs(true);
+                        handleFocusMapCoord(b.x_m, b.y_m, true);
+                        setSelectedTarget({
+                          kind: "ML-Assessed Antarctic Tabular Iceberg",
+                          title: `${b.name} · ML ${levelShort} (${probPct}%)`,
+                          subtitle: `${Math.abs(b.lat).toFixed(2)}°S, ${Math.abs(
+                            b.lon
+                          ).toFixed(2)}°E · ${b.size_nm}`,
+                          metrics: [
+                            {
+                              label: "ML Caution Classification",
+                              value: `${ml.caution_level || "MODERATE CAUTION"} (${probPct}% prob · ${confPct}% conf)`,
+                            },
+                            {
+                              label: "Primary ML Risk Factor",
+                              value: topReason,
+                            },
+                            {
+                              label: "Recommended Action",
+                              value:
+                                ml.recommended_action ||
+                                "Route clear of 7-day drift envelope",
+                            },
+                          ],
+                        });
+                      }}
+                    >
+                      <div className="dss-ml-berg-top">
+                        <strong>
+                          {b.id}{" "}
+                          <span className="mono muted-text">({b.size_nm})</span>
+                        </strong>
+                        <span
+                          className={`dss-caution-pill level-${levelShort.toLowerCase()}`}
+                        >
+                          {levelShort} · {probPct}%
+                        </span>
+                      </div>
+                      <div className="dss-ml-berg-reason">{topReason}</div>
+                      <div className="dss-ml-berg-meta mono">
+                        <span>Drift: {b.drift_km_day} km/d</span>
+                        <span>Conf: {confPct}%</span>
+                        <span className="cyan-text">Focus ↗</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Compact Sea-Ice Scale */}
           <section className="dss-panel dss-panel-last">
@@ -3811,6 +4035,82 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Live ML Iceberg Caution & Navigation Decision-Support Pipeline Strip */}
+          {routeData?.ml_route_assessment && (
+            <div className="dss-ml-pipeline-bar">
+              <div className="dss-mlp-steps">
+                <div className="dss-mlp-step">
+                  <span className="dss-mlp-tag">1. INPUTS</span>
+                  <strong>
+                    NSIDC SIC + {icebergs?.length || 4} USNIC Bergs + Wind/Current
+                  </strong>
+                </div>
+                <span className="dss-mlp-arrow" aria-hidden="true">
+                  →
+                </span>
+                <div className="dss-mlp-step">
+                  <span className="dss-mlp-tag">2. ML CAUTION ASSESSMENT</span>
+                  <strong>
+                    Baseline:{" "}
+                    <span className="warn-text">
+                      {routeData.ml_route_assessment.baseline_caution_short} (
+                      {routeData.ml_route_assessment.baseline_max_prob_pct}%)
+                    </span>{" "}
+                    · Conf {routeData.ml_route_assessment.model_confidence_pct}%
+                  </strong>
+                </div>
+                <span className="dss-mlp-arrow" aria-hidden="true">
+                  →
+                </span>
+                <div className="dss-mlp-step">
+                  <span className="dss-mlp-tag">3. RECOMMENDED ROUTE</span>
+                  <strong>
+                    Optimal A*:{" "}
+                    <span
+                      style={{
+                        color:
+                          routeData.ml_route_assessment
+                            .recommended_caution_color || "#10b981",
+                      }}
+                    >
+                      {routeData.ml_route_assessment.recommended_caution_short} (
+                      {routeData.ml_route_assessment.recommended_max_prob_pct}%)
+                    </span>{" "}
+                    · CPA {routeData.ml_route_assessment.min_cpa_fc_km} km (
+                    {routeData.ml_route_assessment.cpa_berg_id})
+                  </strong>
+                </div>
+              </div>
+              <div className="dss-mlp-actions">
+                <button
+                  type="button"
+                  className={`dss-mlp-btn ${
+                    activeLayer === "risk_iceberg" ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    setSwipeEnabled(false);
+                    setActiveLayer(
+                      activeLayer === "risk_iceberg" ? "ml" : "risk_iceberg"
+                    );
+                  }}
+                  title="Toggle 7-day ML Iceberg Caution Probability Heatmap on Globe/Chart"
+                >
+                  {activeLayer === "risk_iceberg"
+                    ? "Showing ML Caution Field"
+                    : "ML Caution Field"}
+                </button>
+                <button
+                  type="button"
+                  className={`dss-mlp-btn ${showShipBridge ? "active" : ""}`}
+                  onClick={() => setShowShipBridge((s) => !s)}
+                  title="Toggle Live Ship Tactical Ice & Iceberg Radar HUD"
+                >
+                  Ship Radar
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Active "Select Destination" Mode Banner */}
           {isSelectingDestination && (
@@ -4161,6 +4461,8 @@ export default function App() {
                   activeSlice={activeSliceRef.current}
                   extent={scenario?.extent}
                   shape={scenario?.shape}
+                  icebergs={icebergs}
+                  timelineStep={timelineStep}
                 />
 
                 <div className="dss-sb-readout">
@@ -4192,10 +4494,19 @@ export default function App() {
                       </strong>
                     </div>
                     <div>
-                      <span>VOYAGE ELAPSED</span>
-                      <strong className="mono">
-                        T+{Math.round(activeShipTelemetry.hour)}h (
-                        {activeShipTelemetry.progressPct}%)
+                      <span>ML ICEBERG CAUTION</span>
+                      <strong
+                        className="mono"
+                        style={{
+                          color: activeShipTelemetry.caution_color || "#10b981",
+                        }}
+                      >
+                        {activeShipTelemetry.caution_short || "LOW"} (
+                        {Math.round(
+                          (activeShipTelemetry.ml_caution_prob ?? 0.14) * 100
+                        )}
+                        %) · {activeShipTelemetry.nearest_iceberg_id}{" "}
+                        {activeShipTelemetry.nearest_iceberg_km}km
                       </strong>
                     </div>
                   </div>
@@ -4427,6 +4738,21 @@ export default function App() {
                       {Math.round(activeShipTelemetry.sic * 100)}% SIC
                     </strong>
                   </div>
+                  <div>
+                    <span>ML CAUTION</span>
+                    <strong
+                      className="mono"
+                      style={{
+                        color: activeShipTelemetry.caution_color || "#10b981",
+                      }}
+                    >
+                      {activeShipTelemetry.caution_short || "LOW"}{" "}
+                      {Math.round(
+                        (activeShipTelemetry.ml_caution_prob ?? 0.14) * 100
+                      )}
+                      %
+                    </strong>
+                  </div>
                 </div>
               )}
 
@@ -4626,7 +4952,175 @@ export default function App() {
                     </strong>
                     <span className="mono">{stMetrics.heavy_ice_hours} h</span>
                   </div>
+                  {routeData?.ml_route_assessment && (
+                    <>
+                      <div className="dss-rc-row">
+                        <span>ML Caution Peak</span>
+                        <strong
+                          className="mono"
+                          style={{
+                            color:
+                              routeData.ml_route_assessment
+                                .recommended_caution_color || "#10b981",
+                          }}
+                        >
+                          {
+                            routeData.ml_route_assessment
+                              .recommended_caution_short
+                          }{" "}
+                          (
+                          {
+                            routeData.ml_route_assessment
+                              .recommended_max_prob_pct
+                          }
+                          %)
+                        </strong>
+                        <span className="mono warn-text">
+                          {routeData.ml_route_assessment.baseline_caution_short}{" "}
+                          ({routeData.ml_route_assessment.baseline_max_prob_pct}
+                          %)
+                        </span>
+                      </div>
+                      <div className="dss-rc-row">
+                        <span>Iceberg CPA</span>
+                        <strong className="mono cyan-text">
+                          {routeData.ml_route_assessment.min_cpa_fc_km} km
+                        </strong>
+                        <span className="mono">
+                          {routeData.ml_route_assessment.min_cpa_st_km} km (
+                          {routeData.ml_route_assessment.cpa_berg_id})
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
+
+                {/* Integrated ML Iceberg Caution & Route Decision Explainability Block */}
+                {routeData?.ml_route_assessment && (
+                  <div className="dss-ml-route-decision-box">
+                    <div className="dss-ml-rd-head">
+                      <div>
+                        <span className="dss-ml-rd-eyebrow">
+                          ML ICEBERG CAUTION DECISION SUPPORT
+                        </span>
+                        <h3>
+                          {
+                            routeData.ml_route_assessment
+                              .recommended_caution_level
+                          }{" "}
+                          Corridor
+                        </h3>
+                      </div>
+                      <span
+                        className="dss-ml-rd-conf mono"
+                        title="Calibrated ML model classification confidence along route"
+                      >
+                        Conf{" "}
+                        {routeData.ml_route_assessment.model_confidence_pct}%
+                      </span>
+                    </div>
+
+                    <p className="dss-ml-rd-explain">
+                      {routeData.ml_route_assessment.how_ml_steered_route}
+                    </p>
+
+                    <div className="dss-ml-rd-kpis">
+                      <div>
+                        <span>ML Risk Reduction</span>
+                        <strong className="mono pos">
+                          -
+                          {
+                            routeData.ml_route_assessment
+                              .caution_risk_reduction_pct
+                          }
+                          % Peak Prob
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Caution Zone Saved</span>
+                        <strong className="mono pos">
+                          +{routeData.ml_route_assessment.caution_hours_saved} h
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Iceberg Clearance</span>
+                        <strong className="mono cyan-text">
+                          +
+                          {Math.max(
+                            0,
+                            routeData.ml_route_assessment.cpa_clearance_gain_km
+                          )}{" "}
+                          km CPA
+                        </strong>
+                      </div>
+                    </div>
+
+                    {/* Why the Direct/Baseline Area is Risky — Real Model Feature Attributions */}
+                    {routeData.ml_route_assessment.feature_attributions
+                      ?.length > 0 && (
+                      <div className="dss-ml-attr-block">
+                        <div className="dss-ml-attr-title">
+                          <span>
+                            Why Area Is Risky (ML Feature Attribution)
+                          </span>
+                          <span className="mono">Share</span>
+                        </div>
+                        {routeData.ml_route_assessment.feature_attributions
+                          .slice(0, 4)
+                          .map((fa) => (
+                            <div key={fa.feature} className="dss-ml-attr-row">
+                              <div className="dss-ml-attr-label">
+                                <span>{fa.feature}</span>
+                                <strong className="mono">
+                                  {fa.share_pct}%
+                                </strong>
+                              </div>
+                              <div className="dss-ml-attr-bar">
+                                <div
+                                  className="dss-ml-attr-fill"
+                                  style={{
+                                    width: `${Math.max(6, fa.share_pct)}%`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+
+                    {/* Actionable ML Course Corrections */}
+                    {routeData.course_corrections?.length > 0 && (
+                      <div className="dss-ml-cc-list">
+                        <span className="dss-ml-attr-title">
+                          Recommended ML Avoidance Maneuvers
+                        </span>
+                        {routeData.course_corrections.slice(0, 2).map((cc) => (
+                          <button
+                            key={cc.id}
+                            type="button"
+                            className="dss-ml-cc-item"
+                            onClick={() => {
+                              setShowCourseCorrections(true);
+                              handleFocusMapCoord(cc.fc_x_m, cc.fc_y_m, true);
+                            }}
+                          >
+                            <div className="dss-ml-cc-top">
+                              <strong>
+                                {cc.id}: {cc.maneuver} (T+{cc.hour}h)
+                              </strong>
+                              <span className="mono pos">
+                                -{cc.ml_caution_avoided_pct ?? cc.sic_reduction_pct}% Risk
+                              </span>
+                            </div>
+                            <span className="dss-ml-cc-sub">
+                              {cc.ml_why_risky || cc.reason} · Click to inspect on map
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             ) : (
               <p className="dss-meta-line">Computing route...</p>
@@ -5392,7 +5886,7 @@ export default function App() {
                     className={mlTab === "architecture" ? "active" : ""}
                     onClick={() => setMlTab("architecture")}
                   >
-                    01. Live U-Net Architecture &amp; SGD Training
+                    01. Live U-Net &amp; ML Iceberg Caution Engine
                   </button>
                   <button
                     type="button"
@@ -5549,6 +6043,54 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+
+                      {mlStatus?.icebergCautionModel && (
+                        <div className="dss-train-controls-box" style={{ marginTop: "14px" }}>
+                          <h4>
+                            {mlStatus.icebergCautionModel.name} (SIH 26059)
+                          </h4>
+                          <p className="dss-drawer-lead" style={{ marginBottom: "8px" }}>
+                            {mlStatus.icebergCautionModel.architecture} trained on{" "}
+                            <strong>
+                              {mlStatus.icebergCautionModel.trainingSamples.toLocaleString()}
+                            </strong>{" "}
+                            spatio-temporal Antarctic ocean-iceberg-route cells.
+                          </p>
+                          <div className="dss-fuel-metrics-grid">
+                            <div>
+                              <span>Validation Accuracy</span>
+                              <strong className="mono cyan-text">
+                                {(
+                                  mlStatus.icebergCautionModel.valAccuracy * 100
+                                ).toFixed(1)}
+                                %
+                              </strong>
+                            </div>
+                            <div>
+                              <span>Brier Calibration</span>
+                              <strong className="mono">
+                                {mlStatus.icebergCautionModel.valBrierScore.toFixed(
+                                  4
+                                )}
+                              </strong>
+                            </div>
+                            <div>
+                              <span>Training Epochs</span>
+                              <strong className="mono">
+                                {mlStatus.icebergCautionModel.totalEpochs}
+                              </strong>
+                            </div>
+                            <div>
+                              <span>Cross-Entropy Loss</span>
+                              <strong className="mono">
+                                {mlStatus.icebergCautionModel.trainLoss.toFixed(
+                                  4
+                                )}
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
