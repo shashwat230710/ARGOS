@@ -20,6 +20,7 @@ import { getJSON, unpack, sliceLead } from "./api.js";
 import { paintGrid } from "./colormap.js";
 import Map3DView from "./Map3DView.jsx";
 import LandingPage from "./LandingPage.jsx";
+import ArgosLogo from "./ArgosLogo.jsx";
 import {
   VESSEL_PRESETS,
   computeRouteFuelAndSafety,
@@ -3158,10 +3159,13 @@ export default function App() {
           onClick={(e) => {
             e.preventDefault();
             setDrawer(null);
+            setShowLanding(true);
           }}
           className="dss-wordmark"
+          title="Return to ARGOS Mission Overview"
         >
-          {scenario?.title || "ARGOS"}
+          <ArgosLogo size={28} showWordmark={false} />
+          <span>{scenario?.title || "ARGOS"}</span>
         </a>
 
         {/* Zone 2: Clean single-line text navigation links */}

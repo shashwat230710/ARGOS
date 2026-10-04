@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none">
+  <rect width="200" height="200" rx="36" fill="#EBEBEB"/>
+  <!-- Upper-Right Orbiting Planet Earth -->
+  <g transform="translate(138, 52)">
+    <ellipse cx="0" cy="0" rx="24" ry="9.5" transform="rotate(28)" stroke="#132535" stroke-width="3" fill="none"/>
+    <circle cx="0" cy="0" r="12.5" fill="#EBEBEB" stroke="#132535" stroke-width="3"/>
+    <!-- Continents -->
+    <path d="M-5 -10 C-1 -8, 2 -4, -1 1 C-4 4, -2 8, -6 10 L-11 5 C-12 -1, -9 -8, -5 -10 Z" fill="#132535"/>
+    <path d="M5 -9 C9 -6, 12 -1, 10 5 C7 8, 4 6, 3 2 C2 -2, 3 -6, 5 -9 Z" fill="#132535"/>
+  </g>
+
+  <!-- Back Elliptical Rim of Polar Bowl -->
+  <path d="M 28 96 A 72 22 0 0 1 95 74" stroke="#132535" stroke-width="3.2" stroke-linecap="round" fill="none"/>
+  <path d="M 105 74 A 72 22 0 0 1 172 96" stroke="#132535" stroke-width="3.2" stroke-linecap="round" fill="none"/>
+
+  <!-- Left Teal Polar Ocean Basin with Wavy Surface -->
+  <path d="M 28 96 C 38 86, 50 84, 60 90 C 69 95, 81 91, 93 88 C 89 106, 76 121, 56 131 C 41 124, 31 112, 28 96 Z" fill="#2CA3BF" stroke="#132535" stroke-width="2.8" stroke-linejoin="round"/>
+  <!-- Left Floating Icebergs -->
+  <polygon points="31,96 40,89 49,96" fill="#132535"/>
+  <polygon points="56,97 66,90 76,97" fill="#132535"/>
+
+  <!-- Right Teal Polar Ocean Basin with Wavy Surface -->
+  <path d="M 107 88 C 119 91, 131 95, 142 90 C 152 85, 163 87, 172 96 C 169 112, 159 124, 144 131 C 124 121, 111 106, 107 88 Z" fill="#2CA3BF" stroke="#132535" stroke-width="2.8" stroke-linejoin="round"/>
+  <!-- Right Floating Iceberg -->
+  <polygon points="126,101 136,94 146,101" fill="#132535"/>
+
+  <!-- Dark Navy Lower Hemisphere & Central Passage Spire -->
+  <path d="M 28 99 C 29 139, 61 170, 100 170 C 139 170, 171 139, 172 99 C 161 116, 134 127, 107 86 L 100 20 L 93 86 C 66 127, 39 116, 28 99 Z" fill="#132535"/>
+
+  <!-- Crisp Negative-Space Grid & Passage Lines Matching Uploaded Logo -->
+  <!-- Left & Right Spire Sweeps -->
+  <path d="M 100 22 C 96 92, 79 122, 46 146" stroke="#EBEBEB" stroke-width="4.2" stroke-linecap="round" fill="none"/>
+  <path d="M 100 22 C 104 92, 121 122, 154 146" stroke="#EBEBEB" stroke-width="4.2" stroke-linecap="round" fill="none"/>
+  <!-- Center Vertical Meridian -->
+  <line x1="100" y1="54" x2="100" y2="171" stroke="#EBEBEB" stroke-width="4.4"/>
+  <!-- Curved Latitude Band -->
+  <path d="M 27 98 Q 100 144 173 98" stroke="#EBEBEB" stroke-width="4.4" fill="none"/>
+</svg>
