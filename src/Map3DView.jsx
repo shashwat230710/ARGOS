@@ -56,6 +56,7 @@ const Map3DView = forwardRef(function Map3DView(
     onClearDestination,
     onInspectFeature,
     probeTextRef,
+    paused = false,
   },
   ref
 ) {
@@ -106,7 +107,10 @@ const Map3DView = forwardRef(function Map3DView(
     showH3Grid: false,
     h3CellLookup: new Map(),
     h3Resolution: 3,
+    paused: false,
   });
+
+  threeRef.current.paused = Boolean(paused);
 
   // Convert EPSG:3412 (x_m, y_m) to planar scene coordinates (sx, sz) in [-W/2..W/2, -H/2..H/2]
   function mapToSceneXZ(xm, ym) {
@@ -762,6 +766,7 @@ const Map3DView = forwardRef(function Map3DView(
 
     const animate = () => {
       animId = requestAnimationFrame(animate);
+      if (st.paused) return;
       phase = (phase + 0.022) % 1;
 
       // Smoothly damp camera spherical coordinates and target for fluid 60fps globe rotation/zoom

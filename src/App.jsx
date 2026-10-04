@@ -2549,6 +2549,10 @@ export default function App() {
   // 8b. Real-Time Animated Optimal Path Flow Indicator, Expanding Ship Beacon & Windy.com Comet Streaks
   useEffect(() => {
     const src = pulseSourceRef.current;
+    if (showLanding) {
+      src.clear();
+      return;
+    }
     const hasRoutePulse = Boolean(routeData?.forecast_aware?.xy && showRoutes);
     const hasWindComets = Boolean(
       showWeatherFigures && weatherOverlays?.flowTracks?.length
@@ -2721,6 +2725,7 @@ export default function App() {
 
     return () => clearInterval(timer);
   }, [
+    showLanding,
     routeData,
     showRoutes,
     activeShipIdx,
@@ -3865,6 +3870,7 @@ export default function App() {
               onClearDestination={handleClearDestination}
               onInspectFeature={(info) => setSelectedTarget(info)}
               probeTextRef={probeTextRef}
+              paused={showLanding}
             />
           )}
 

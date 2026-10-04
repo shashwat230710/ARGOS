@@ -2,15 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import ArgosLogo from "./ArgosLogo.jsx";
 
 /**
- * ARGOS — Clean Editorial & Scroll-Reactive Polar Landing Page
- * Inspired by high-craft architectural/editorial glacier layouts, tailored to ARGOS:
- * - Zero metric boxes, zero dense text walls: uses short, crisp 1–2 line statements
- *   with subtle highlighted phrases.
- * - Multi-stage scroll-reactive background canvas that continuously transforms as you scroll:
- *   Stage 0 (0–28%): Sculpted 3D Crystalline Glacier Horizon + Rising Polar Globe
- *   Stage 1 (28–58%): Orbital Satellite Pass & Illuminating 7-Day Sea-Ice Grid
- *   Stage 2 (58–82%): Isometric Southern Ocean A* Ship Corridor & Drifting Icebergs
- *   Stage 3 (82–100%): Deep Polar Night & Searchlight Iceberg Avoidance Watch
+ * ARGOS — Clean, High-Performance Editorial & Scroll-Reactive Polar Landing Page
+ * - Zero React re-renders during scroll: scroll progress bar & background canvas are driven
+ *   directly via refs for 60/120fps butter-smooth scrolling with zero frame drops.
+ * - Pre-computed 3D sphere trigonometry & IntersectionObserver-gated Titanic simulation canvas.
+ * - Clean, natural typography (removed boxed highlight tags and removed center VIEW button).
  */
 export default function LandingPage({
   leg,
@@ -24,10 +20,11 @@ export default function LandingPage({
   const bgCanvasRef = useRef(null);
   const collisionCanvasRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  const progressFillRef = useRef(null);
   const scrollProgressRef = useRef(0);
   const targetScrollRef = useRef(0);
+  const activeSceneRef = useRef(0);
 
-  const [scrollPct, setScrollPct] = useState(0);
   const [activeScene, setActiveScene] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -35,17 +32,23 @@ export default function LandingPage({
   const [collisionMode, setCollisionMode] = useState("titanic1912");
   const [simSpeedKnots, setSimSpeedKnots] = useState(22.5);
 
+  // Passive, zero-re-render scroll handler (only updates React state when section index changes)
   const handleScroll = (e) => {
     const el = e.currentTarget;
     const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
     const prog = Math.max(0, Math.min(1, el.scrollTop / maxScroll));
     targetScrollRef.current = prog;
-    setScrollPct(Math.round(prog * 100));
 
-    if (prog < 0.26) setActiveScene(0);
-    else if (prog < 0.56) setActiveScene(1);
-    else if (prog < 0.82) setActiveScene(2);
-    else setActiveScene(3);
+    if (progressFillRef.current) {
+      progressFillRef.current.style.transform = `scaleX(${prog.toFixed(4)})`;
+    }
+
+    const nextScene =
+      prog < 0.26 ? 0 : prog < 0.56 ? 1 : prog < 0.82 ? 2 : 3;
+    if (nextScene !== activeSceneRef.current) {
+      activeSceneRef.current = nextScene;
+      setActiveScene(nextScene);
+    }
   };
 
   const scrollToId = (id) => {
@@ -54,112 +57,128 @@ export default function LandingPage({
     if (el) el.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Multi-Stage Scroll-Reactive Background Canvas
+  // 1. Hardware-Friendly Scroll-Reactive Polar Background Canvas
   useEffect(() => {
     const canvas = bgCanvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: false });
     let animId = 0;
     let time = 0;
     let mouseX = 0;
     let mouseY = 0;
     let targetMouseX = 0;
     let targetMouseY = 0;
+    let W = window.innerWidth;
+    let H = window.innerHeight;
 
     const handleResize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = window.innerWidth * dpr;
-      canvas.height = window.innerHeight * dpr;
+      W = window.innerWidth;
+      H = window.innerHeight;
+      // Cap DPR at 1.25 on full-screen background canvas to prevent fill-rate frame drops on scroll
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
     handleResize();
-    window.addEventListener("resize", handleResize);
+    window.addEventListener("resize", handleResize, { passive: true });
 
     const handleMouseMove = (e) => {
-      targetMouseX = (e.clientX / window.innerWidth - 0.5) * 28;
-      targetMouseY = (e.clientY / window.innerHeight - 0.5) * 20;
+      targetMouseX = (e.clientX / W - 0.5) * 22;
+      targetMouseY = (e.clientY / H - 0.5) * 16;
     };
-    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mousemove", handleMouseMove, { passive: true });
 
-    const stars = Array.from({ length: 80 }, (_, i) => ({
+    const stars = Array.from({ length: 55 }, (_, i) => ({
       xFrac: ((i * 73 + 19) % 100) / 100,
       yFrac: ((i * 41 + 7) % 100) / 100,
-      r: (i % 3) * 0.4 + 0.55,
-      alpha: 0.14 + (i % 5) * 0.09,
+      r: (i % 3) * 0.35 + 0.6,
+      alpha: 0.16 + (i % 5) * 0.08,
     }));
 
-    const windWisps = Array.from({ length: 24 }, (_, i) => ({
+    const windWisps = Array.from({ length: 18 }, (_, i) => ({
       x: ((i * 97) % 100) / 100,
-      y: 0.14 + (((i * 53) % 72) / 100),
-      speed: 0.036 + (i % 5) * 0.012,
-      len: 22 + (i % 4) * 9,
+      y: 0.15 + (((i * 53) % 72) / 100),
+      speed: 0.034 + (i % 5) * 0.011,
+      len: 22 + (i % 4) * 8,
       curve: (i % 2 === 0 ? 1 : -1) * (3 + (i % 3) * 2),
       isCyan: i % 2 === 0,
     }));
 
     const oceanIcebergs = [
       {
-        xBase: 0.22,
-        yBase: 0.68,
-        w: 44,
-        h: 30,
-        speed: -0.009,
+        xBase: 0.2,
+        yBase: 0.7,
+        w: 42,
+        h: 28,
+        speed: -0.008,
         phase: 0.4,
         name: "B-22A",
       },
       {
-        xBase: 0.52,
-        yBase: 0.44,
-        w: 38,
-        h: 26,
-        speed: -0.012,
+        xBase: 0.5,
+        yBase: 0.46,
+        w: 36,
+        h: 24,
+        speed: -0.011,
         phase: 1.7,
         name: "D-28",
       },
       {
         xBase: 0.78,
-        yBase: 0.62,
-        w: 54,
-        h: 36,
-        speed: -0.01,
+        yBase: 0.64,
+        w: 50,
+        h: 34,
+        speed: -0.009,
         phase: 3.1,
         name: "A-76A",
       },
       {
         xBase: 0.88,
         yBase: 0.34,
-        w: 34,
-        h: 22,
-        speed: -0.014,
+        w: 32,
+        h: 21,
+        speed: -0.013,
         phase: 4.6,
         name: "A-74",
       },
     ];
 
-    // Sculpted Crystalline Glacier Ridge peaks for the Hero Horizon
     const glacierPeaks = [
-      { x: 0.0, h: 0.18 },
-      { x: 0.08, h: 0.26 },
-      { x: 0.16, h: 0.21 },
-      { x: 0.25, h: 0.31 },
-      { x: 0.34, h: 0.23 },
-      { x: 0.43, h: 0.34 },
-      { x: 0.52, h: 0.25 },
-      { x: 0.61, h: 0.29 },
-      { x: 0.71, h: 0.22 },
-      { x: 0.81, h: 0.32 },
-      { x: 0.91, h: 0.24 },
-      { x: 1.0, h: 0.19 },
+      { x: 0.0, h: 0.16 },
+      { x: 0.09, h: 0.24 },
+      { x: 0.18, h: 0.19 },
+      { x: 0.27, h: 0.29 },
+      { x: 0.37, h: 0.21 },
+      { x: 0.46, h: 0.31 },
+      { x: 0.55, h: 0.23 },
+      { x: 0.65, h: 0.27 },
+      { x: 0.75, h: 0.2 },
+      { x: 0.85, h: 0.29 },
+      { x: 0.93, h: 0.22 },
+      { x: 1.0, h: 0.17 },
     ];
 
-    const projectSpherePoint = (latDeg, lonDeg, cx, cy, R, tiltRad) => {
-      const lat = (latDeg * Math.PI) / 180;
-      const lon = (lonDeg * Math.PI) / 180;
-      const x = Math.cos(lat) * Math.sin(lon);
-      const y0 = Math.sin(lat);
-      const z0 = Math.cos(lat) * Math.cos(lon);
-      const y = y0 * Math.cos(tiltRad) - z0 * Math.sin(tiltRad);
-      const z = y0 * Math.sin(tiltRad) + z0 * Math.cos(tiltRad);
+    // Pre-compute lat/lon trig tables for fast 3D globe projection
+    const latLevels = [-75, -60, -45, -30, -15, 0, 15, 30, 45].map((deg) => {
+      const rad = (deg * Math.PI) / 180;
+      return { deg, sinLat: Math.sin(rad), cosLat: Math.cos(rad) };
+    });
+
+    const projectSphereFast = (
+      sinLat,
+      cosLat,
+      lonRad,
+      cx,
+      cy,
+      R,
+      sinTilt,
+      cosTilt
+    ) => {
+      const x = cosLat * Math.sin(lonRad);
+      const z0 = cosLat * Math.cos(lonRad);
+      const y = sinLat * cosTilt - z0 * sinTilt;
+      const z = sinLat * sinTilt + z0 * cosTilt;
       return {
         px: cx + x * R,
         py: cy - y * R,
@@ -171,14 +190,12 @@ export default function LandingPage({
       ctx.save();
       ctx.translate(bx, by + bob);
 
-      if (showRing > 0.05) {
+      if (showRing > 0.06) {
         ctx.beginPath();
-        ctx.ellipse(0, h * 0.14, w * 1.45, h * 0.52, 0, 0, Math.PI * 2);
-        ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = `rgba(245, 158, 11, ${(showRing * 0.55).toFixed(2)})`;
-        ctx.lineWidth = 1.2;
+        ctx.ellipse(0, h * 0.14, w * 1.4, h * 0.5, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(245, 158, 11, ${(showRing * 0.48).toFixed(2)})`;
+        ctx.lineWidth = 1.1;
         ctx.stroke();
-        ctx.setLineDash([]);
       }
 
       // Underwater cyan keel
@@ -187,14 +204,14 @@ export default function LandingPage({
       ctx.lineTo(0, h * 0.85);
       ctx.lineTo(w * 0.8, h * 0.12);
       ctx.closePath();
-      ctx.fillStyle = "rgba(14, 165, 233, 0.18)";
+      ctx.fillStyle = "rgba(14, 165, 233, 0.17)";
       ctx.fill();
 
       // Waterline ripple
       ctx.beginPath();
-      ctx.ellipse(0, h * 0.14, w * 1.05, h * 0.28, 0, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.42)";
-      ctx.lineWidth = 1.1;
+      ctx.ellipse(0, h * 0.14, w * 1.04, h * 0.26, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.38)";
+      ctx.lineWidth = 1;
       ctx.stroke();
 
       // Left sunlit glacial wall
@@ -204,7 +221,7 @@ export default function LandingPage({
       ctx.lineTo(0, -h * 0.32);
       ctx.lineTo(0, h * 0.24);
       ctx.closePath();
-      ctx.fillStyle = "rgba(224, 242, 254, 0.92)";
+      ctx.fillStyle = "rgba(224, 242, 254, 0.9)";
       ctx.fill();
 
       // Right shaded glacial wall
@@ -214,7 +231,7 @@ export default function LandingPage({
       ctx.lineTo(w * 0.76, h * 0.1);
       ctx.lineTo(0, h * 0.24);
       ctx.closePath();
-      ctx.fillStyle = "rgba(125, 211, 252, 0.84)";
+      ctx.fillStyle = "rgba(125, 211, 252, 0.82)";
       ctx.fill();
 
       // Top snow plateau
@@ -226,12 +243,9 @@ export default function LandingPage({
       ctx.closePath();
       ctx.fillStyle = "#f8fafc";
       ctx.fill();
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.75)";
-      ctx.lineWidth = 1.1;
-      ctx.stroke();
 
-      if (label && showRing > 0.2) {
-        ctx.fillStyle = `rgba(253, 230, 138, ${(showRing * 0.85).toFixed(2)})`;
+      if (label && showRing > 0.22) {
+        ctx.fillStyle = `rgba(253, 230, 138, ${(showRing * 0.8).toFixed(2)})`;
         ctx.font = "500 9px 'JetBrains Mono', monospace";
         ctx.fillText(label, -w * 0.35, -h * 0.95);
       }
@@ -240,12 +254,12 @@ export default function LandingPage({
     };
 
     const drawAutonomousShip = (sx, sy, heading, label, hullColor, tNow) => {
-      const pulseR = 10 + ((tNow * 22) % 26);
-      const pulseAlpha = Math.max(0.04, (1 - pulseR / 36) * 0.6);
+      const pulseR = 10 + ((tNow * 22) % 24);
+      const pulseAlpha = Math.max(0.04, (1 - pulseR / 34) * 0.55);
       ctx.beginPath();
       ctx.ellipse(sx, sy, pulseR, pulseR * 0.65, 0, 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(163, 230, 53, ${pulseAlpha.toFixed(2)})`;
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.1;
       ctx.stroke();
 
       ctx.save();
@@ -253,44 +267,44 @@ export default function LandingPage({
       ctx.rotate(heading);
 
       // Sweeping forward radar cone
-      const sweep = Math.sin(tNow * 3.0) * 0.3;
+      const sweep = Math.sin(tNow * 2.8) * 0.28;
       ctx.beginPath();
       ctx.moveTo(10, 0);
-      ctx.arc(10, 0, 46, sweep - 0.34, sweep + 0.34);
+      ctx.arc(10, 0, 42, sweep - 0.32, sweep + 0.32);
       ctx.closePath();
-      ctx.fillStyle = "rgba(163, 230, 53, 0.14)";
+      ctx.fillStyle = "rgba(163, 230, 53, 0.13)";
       ctx.fill();
 
       // Kelvin V-wake
       ctx.beginPath();
       ctx.moveTo(-8, 0);
-      ctx.lineTo(-34, -10);
+      ctx.lineTo(-32, -9);
       ctx.moveTo(-8, 0);
-      ctx.lineTo(-34, 10);
-      ctx.strokeStyle = "rgba(34, 211, 238, 0.52)";
-      ctx.lineWidth = 1.5;
+      ctx.lineTo(-32, 9);
+      ctx.strokeStyle = "rgba(34, 211, 238, 0.48)";
+      ctx.lineWidth = 1.4;
       ctx.stroke();
 
       // Vessel hull
       ctx.beginPath();
       ctx.moveTo(14, 0);
-      ctx.lineTo(4, 5);
-      ctx.lineTo(-11, 4.4);
-      ctx.lineTo(-11, -4.4);
-      ctx.lineTo(4, -5);
+      ctx.lineTo(4, 4.8);
+      ctx.lineTo(-11, 4.2);
+      ctx.lineTo(-11, -4.2);
+      ctx.lineTo(4, -4.8);
       ctx.closePath();
       ctx.fillStyle = hullColor;
       ctx.fill();
       ctx.strokeStyle = "#f8fafc";
-      ctx.lineWidth = 1.3;
+      ctx.lineWidth = 1.2;
       ctx.stroke();
 
       ctx.fillStyle = "#07090e";
-      ctx.fillRect(-3, -2.2, 5, 4.4);
+      ctx.fillRect(-3, -2, 5, 4);
       ctx.restore();
 
       if (label) {
-        ctx.fillStyle = "rgba(226, 232, 240, 0.82)";
+        ctx.fillStyle = "rgba(226, 232, 240, 0.8)";
         ctx.font = "500 9.5px 'JetBrains Mono', monospace";
         ctx.fillText(label, sx + 16, sy - 8);
       }
@@ -298,109 +312,76 @@ export default function LandingPage({
 
     const render = () => {
       animId = requestAnimationFrame(render);
-      time += 0.011;
-      mouseX += (targetMouseX - mouseX) * 0.05;
-      mouseY += (targetMouseY - mouseY) * 0.05;
+      time += 0.01;
+      mouseX += (targetMouseX - mouseX) * 0.06;
+      mouseY += (targetMouseY - mouseY) * 0.06;
       scrollProgressRef.current +=
-        (targetScrollRef.current - scrollProgressRef.current) * 0.07;
+        (targetScrollRef.current - scrollProgressRef.current) * 0.08;
 
-      const W = window.innerWidth;
-      const H = window.innerHeight;
-      const sp = scrollProgressRef.current; // Smooth 0..1 scroll progress
+      const sp = scrollProgressRef.current;
 
-      ctx.clearRect(0, 0, W, H);
-
-      // Dynamic Sky & Ocean Background Gradient that shifts hue & depth with scroll
-      const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
-      if (sp < 0.5) {
-        const u = sp * 2;
-        bgGrad.addColorStop(0, "#050912");
-        bgGrad.addColorStop(
-          0.55,
-          `rgba(${Math.round(8 + u * 6)}, ${Math.round(24 + u * 16)}, ${Math.round(46 + u * 24)}, 1)`
-        );
-        bgGrad.addColorStop(1, "#040811");
-      } else {
-        const u = (sp - 0.5) * 2;
-        bgGrad.addColorStop(0, "#04070f");
-        bgGrad.addColorStop(
-          0.55,
-          `rgba(${Math.round(14 - u * 8)}, ${Math.round(40 - u * 22)}, ${Math.round(70 - u * 35)}, 1)`
-        );
-        bgGrad.addColorStop(1, "#02050a");
-      }
-      ctx.fillStyle = bgGrad;
+      // Solid fast background clear
+      ctx.fillStyle = "#050912";
       ctx.fillRect(0, 0, W, H);
 
-      // Stars (more prominent at top and bottom polar night)
+      // Stars
+      ctx.fillStyle = "rgba(186, 230, 253, 0.24)";
       for (const s of stars) {
-        const sx = s.xFrac * W - mouseX * 0.25;
-        const sy = ((s.yFrac - sp * 0.18 + 1) % 1) * H - mouseY * 0.25;
-        ctx.beginPath();
-        ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(186, 230, 253, ${(s.alpha * (0.7 + sp * 0.4)).toFixed(2)})`;
-        ctx.fill();
+        const sx = s.xFrac * W - mouseX * 0.2;
+        const sy = ((s.yFrac - sp * 0.16 + 1) % 1) * H - mouseY * 0.2;
+        ctx.fillRect(sx, sy, s.r * 1.6, s.r * 1.6);
       }
 
-      // 3D Tilted Rotating Planetary Globe (moves, scales, and tilts with scroll)
+      // 3D Tilted Rotating Planetary Globe (shifts & tilts smoothly on scroll)
       const globeX =
-        W * (0.64 - Math.sin(sp * Math.PI) * 0.14) + mouseX * 0.9;
+        W * (0.64 - Math.sin(sp * Math.PI) * 0.13) + mouseX * 0.85;
       const globeY =
-        H * (0.44 - sp * 0.08 + Math.cos(sp * Math.PI * 2) * 0.04) +
-        mouseY * 0.9;
-      const R = Math.min(W, H) * (0.34 + Math.sin(sp * Math.PI) * 0.09);
-      const tiltRad = 0.36 + sp * 0.68; // Tilts from horizon view to deep South Pole view as you scroll!
-      const rotDeg = time * 13 + sp * 220;
-
-      // Atmospheric rim glow
-      const halo = ctx.createRadialGradient(
-        globeX,
-        globeY,
-        R * 0.7,
-        globeX,
-        globeY,
-        R * 1.35
-      );
-      halo.addColorStop(0, "rgba(14, 165, 233, 0.22)");
-      halo.addColorStop(0.55, "rgba(6, 182, 212, 0.08)");
-      halo.addColorStop(1, "rgba(7, 9, 14, 0)");
-      ctx.beginPath();
-      ctx.arc(globeX, globeY, R * 1.35, 0, Math.PI * 2);
-      ctx.fillStyle = halo;
-      ctx.fill();
+        H * (0.44 - sp * 0.07 + Math.cos(sp * Math.PI * 2) * 0.04) +
+        mouseY * 0.85;
+      const R = Math.min(W, H) * (0.34 + Math.sin(sp * Math.PI) * 0.08);
+      const tiltRad = 0.36 + sp * 0.66;
+      const sinTilt = Math.sin(tiltRad);
+      const cosTilt = Math.cos(tiltRad);
+      const rotRad = ((time * 13 + sp * 210) * Math.PI) / 180;
 
       // 3D Sphere body
       const sphereGrad = ctx.createRadialGradient(
-        globeX - R * 0.28,
-        globeY - R * 0.28,
-        R * 0.08,
+        globeX - R * 0.25,
+        globeY - R * 0.25,
+        R * 0.1,
         globeX,
         globeY,
-        R
+        R * 1.15
       );
-      sphereGrad.addColorStop(0, "rgba(16, 48, 84, 0.88)");
-      sphereGrad.addColorStop(0.65, "rgba(8, 24, 46, 0.93)");
-      sphereGrad.addColorStop(1, "rgba(4, 10, 20, 0.97)");
+      sphereGrad.addColorStop(0, "rgba(15, 46, 82, 0.9)");
+      sphereGrad.addColorStop(0.75, "rgba(7, 20, 38, 0.95)");
+      sphereGrad.addColorStop(1, "rgba(5, 9, 18, 0)");
       ctx.beginPath();
-      ctx.arc(globeX, globeY, R, 0, Math.PI * 2);
+      ctx.arc(globeX, globeY, R * 1.15, 0, Math.PI * 2);
       ctx.fillStyle = sphereGrad;
       ctx.fill();
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.38)";
-      ctx.lineWidth = 1.4;
+
+      ctx.beginPath();
+      ctx.arc(globeX, globeY, R, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.36)";
+      ctx.lineWidth = 1.3;
       ctx.stroke();
 
-      // 3D Latitude Rings
-      for (const lat of [-75, -60, -45, -30, -15, 0, 15, 30, 45]) {
+      // 3D Latitude Rings (step = 12 deg for fast 60fps rendering)
+      for (const latObj of latLevels) {
         ctx.beginPath();
         let started = false;
-        for (let lon = -180; lon <= 180; lon += 6) {
-          const pt = projectSpherePoint(
-            lat,
-            lon + rotDeg,
+        for (let lon = -180; lon <= 180; lon += 12) {
+          const lonRad = (lon * Math.PI) / 180 + rotRad;
+          const pt = projectSphereFast(
+            latObj.sinLat,
+            latObj.cosLat,
+            lonRad,
             globeX,
             globeY,
             R,
-            tiltRad
+            sinTilt,
+            cosTilt
           );
           if (pt.z > -0.05) {
             if (!started) {
@@ -414,25 +395,31 @@ export default function LandingPage({
           }
         }
         ctx.strokeStyle =
-          lat <= -60
-            ? "rgba(56, 189, 248, 0.42)"
-            : "rgba(148, 163, 184, 0.13)";
-        ctx.lineWidth = lat === -60 ? 1.4 : 0.8;
+          latObj.deg <= -60
+            ? "rgba(56, 189, 248, 0.4)"
+            : "rgba(148, 163, 184, 0.12)";
+        ctx.lineWidth = latObj.deg === -60 ? 1.3 : 0.8;
         ctx.stroke();
       }
 
       // 3D Longitude Meridians
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.12)";
+      ctx.lineWidth = 0.8;
       for (let lon = 0; lon < 360; lon += 30) {
+        const lonRad = (lon * Math.PI) / 180 + rotRad;
         ctx.beginPath();
         let started = false;
-        for (let lat = -85; lat <= 85; lat += 5) {
-          const pt = projectSpherePoint(
-            lat,
-            lon + rotDeg,
+        for (let lat = -80; lat <= 80; lat += 10) {
+          const rad = (lat * Math.PI) / 180;
+          const pt = projectSphereFast(
+            Math.sin(rad),
+            Math.cos(rad),
+            lonRad,
             globeX,
             globeY,
             R,
-            tiltRad
+            sinTilt,
+            cosTilt
           );
           if (pt.z > 0) {
             if (!started) {
@@ -445,25 +432,25 @@ export default function LandingPage({
             started = false;
           }
         }
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.13)";
-        ctx.lineWidth = 0.8;
         ctx.stroke();
       }
 
-      // Illuminated Southern Polar Sea-Ice Cap (-62°S to -88°S) that pulses & expands with scroll
+      // Illuminated Southern Polar Sea-Ice Cap (-62°S to -88°S)
       ctx.beginPath();
       let capStarted = false;
-      for (let lon = 0; lon <= 360; lon += 5) {
-        const wobble =
-          Math.sin(((lon + rotDeg) * Math.PI) / 45) * 3.5 +
-          Math.cos(((lon - rotDeg) * Math.PI) / 60) * 2.5;
-        const pt = projectSpherePoint(
-          -62 + wobble - sp * 3,
-          lon + rotDeg,
+      for (let lon = 0; lon <= 360; lon += 10) {
+        const lonRad = (lon * Math.PI) / 180 + rotRad;
+        const wobble = Math.sin(lonRad * 4) * 3 + Math.cos(lonRad * 3) * 2;
+        const latRad = ((-62 + wobble - sp * 3) * Math.PI) / 180;
+        const pt = projectSphereFast(
+          Math.sin(latRad),
+          Math.cos(latRad),
+          lonRad,
           globeX,
           globeY,
           R,
-          tiltRad
+          sinTilt,
+          cosTilt
         );
         if (pt.z > -0.15) {
           if (!capStarted) {
@@ -476,92 +463,71 @@ export default function LandingPage({
       }
       if (capStarted) {
         ctx.closePath();
-        ctx.fillStyle = `rgba(56, 189, 248, ${(0.16 + Math.sin(sp * Math.PI) * 0.12).toFixed(2)})`;
+        ctx.fillStyle = `rgba(56, 189, 248, ${(0.15 + Math.sin(sp * Math.PI) * 0.1).toFixed(2)})`;
         ctx.fill();
-        ctx.strokeStyle = "rgba(34, 211, 238, 0.72)";
-        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = "rgba(34, 211, 238, 0.68)";
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       }
 
       // Orbiting Satellite Ring around the 3D Globe
       ctx.save();
       ctx.translate(globeX, globeY);
-      ctx.rotate(-0.28 + sp * 0.55);
+      ctx.rotate(-0.28 + sp * 0.52);
       ctx.beginPath();
-      ctx.ellipse(0, 0, R * 1.2, R * 0.35, 0, 0, Math.PI * 2);
-      ctx.setLineDash([6, 8]);
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.32)";
-      ctx.lineWidth = 1.1;
+      ctx.ellipse(0, 0, R * 1.18, R * 0.34, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.25)";
+      ctx.lineWidth = 1;
       ctx.stroke();
-      ctx.setLineDash([]);
 
-      const satAngle = time * 1.15 + sp * 3.5;
-      const satX = Math.cos(satAngle) * R * 1.2;
-      const satY = Math.sin(satAngle) * R * 0.35;
+      const satAngle = time * 1.15 + sp * 3.2;
+      const satX = Math.cos(satAngle) * R * 1.18;
+      const satY = Math.sin(satAngle) * R * 0.34;
       ctx.beginPath();
-      ctx.arc(satX, satY, 4, 0, Math.PI * 2);
+      ctx.arc(satX, satY, 3.8, 0, Math.PI * 2);
       ctx.fillStyle = "#38bdf8";
       ctx.fill();
       ctx.restore();
 
-      // Sculpted Crystalline Glacier Ridge Horizon (Inspired by reference image — prominent in Hero, recedes on scroll)
-      const glacierShiftY = sp * H * 0.52;
-      const glacierAlpha = Math.max(0, 1 - sp * 1.65);
-      if (glacierAlpha > 0.02) {
-        ctx.save();
-        ctx.globalAlpha = glacierAlpha;
-        const baseRidgeY = H * 0.72 + glacierShiftY;
+      // Sculpted Crystalline Glacier Ridge Horizon (Prominent in Hero, recedes smoothly on scroll)
+      const glacierAlpha = Math.max(0, 1 - sp * 1.75);
+      if (glacierAlpha > 0.03) {
+        const glacierShiftY = sp * H * 0.48;
+        const baseRidgeY = H * 0.74 + glacierShiftY;
 
-        // Back shaded glacial mountain range
         ctx.beginPath();
         ctx.moveTo(0, H);
         for (let i = 0; i < glacierPeaks.length; i++) {
           const p = glacierPeaks[i];
-          const px = p.x * W - mouseX * 0.4;
-          const py = baseRidgeY - p.h * H * 0.62;
+          const px = p.x * W - mouseX * 0.35;
+          const py = baseRidgeY - p.h * H * 0.58;
           ctx.lineTo(px, py);
         }
         ctx.lineTo(W, H);
         ctx.closePath();
-        const backGlacierGrad = ctx.createLinearGradient(
-          0,
-          baseRidgeY - H * 0.22,
-          0,
-          H
-        );
-        backGlacierGrad.addColorStop(0, "rgba(186, 230, 253, 0.24)");
-        backGlacierGrad.addColorStop(0.45, "rgba(56, 189, 248, 0.14)");
-        backGlacierGrad.addColorStop(1, "rgba(7, 13, 25, 0.95)");
-        ctx.fillStyle = backGlacierGrad;
+        ctx.fillStyle = `rgba(18, 42, 72, ${(glacierAlpha * 0.55).toFixed(2)})`;
         ctx.fill();
 
-        // Faceted crystalline ridge lines
         ctx.beginPath();
         for (let i = 0; i < glacierPeaks.length; i++) {
           const p = glacierPeaks[i];
-          const px = p.x * W - mouseX * 0.4;
-          const py = baseRidgeY - p.h * H * 0.62;
+          const px = p.x * W - mouseX * 0.35;
+          const py = baseRidgeY - p.h * H * 0.58;
           if (i === 0) ctx.moveTo(px, py);
           else ctx.lineTo(px, py);
-          // Vertical facet ridge line down to water
-          ctx.moveTo(px, py);
-          ctx.lineTo(px + 18, baseRidgeY + 20);
-          ctx.moveTo(px, py);
         }
-        ctx.strokeStyle = "rgba(224, 242, 254, 0.35)";
-        ctx.lineWidth = 1.1;
+        ctx.strokeStyle = `rgba(186, 230, 253, ${(glacierAlpha * 0.36).toFixed(2)})`;
+        ctx.lineWidth = 1.2;
         ctx.stroke();
-
-        ctx.restore();
       }
 
-      // Short Moving Wind Wisps across the polar ocean
+      // Short Moving Wind Wisps
       for (const w of windWisps) {
-        const prog = (w.x + time * w.speed + sp * 0.2) % 1;
+        const prog = (w.x + time * w.speed + sp * 0.18) % 1;
         const wx = prog * W;
-        const wy = w.y * H + Math.sin(prog * 8 + w.len) * 8;
-        const alpha = Math.sin(prog * Math.PI) * 0.42;
-        if (alpha > 0.04) {
+        const wy = w.y * H + Math.sin(prog * 8 + w.len) * 7;
+        const alpha = Math.sin(prog * Math.PI) * 0.4;
+        if (alpha > 0.05) {
           ctx.beginPath();
           ctx.moveTo(wx, wy);
           ctx.quadraticCurveTo(
@@ -572,39 +538,41 @@ export default function LandingPage({
           );
           ctx.strokeStyle = w.isCyan
             ? `rgba(56, 189, 248, ${alpha.toFixed(2)})`
-            : `rgba(224, 242, 254, ${(alpha * 0.85).toFixed(2)})`;
-          ctx.lineWidth = 1.3;
-          ctx.lineCap = "round";
+            : `rgba(224, 242, 254, ${(alpha * 0.82).toFixed(2)})`;
+          ctx.lineWidth = 1.25;
           ctx.stroke();
         }
       }
 
-      // Drifting 3D Crystalline Icebergs (respond to scroll with parallax & hazard rings)
+      // Drifting 3D Crystalline Icebergs
       const ringStrength = Math.max(0, Math.sin(sp * Math.PI));
       for (const berg of oceanIcebergs) {
         const bx =
           (((berg.xBase + time * berg.speed + sp * 0.14) % 1 + 1) % 1) * W;
-        const by = berg.yBase * H + (0.4 - sp) * 65;
-        const bob = Math.sin(time * 2.1 + berg.phase) * 3.5;
+        const by = berg.yBase * H + (0.4 - sp) * 60;
+        const bob = Math.sin(time * 2.0 + berg.phase) * 3;
         draw3DIceberg(bx, by, berg.w, berg.h, bob, ringStrength, berg.name);
       }
 
-      // Dynamic A* Ship Trajectory & Sailing Vessels (shifts across viewport as user scrolls)
-      const ship1T = (time * 0.052 + sp * 0.38) % 1;
+      // Dynamic A* Ship Trajectory & Sailing Vessels
+      const ship1T = (time * 0.05 + sp * 0.35) % 1;
       const routeBaseY = H * (0.66 - sp * 0.14);
       const s1x = W * (0.18 + ship1T * 0.66);
-      const s1y = routeBaseY - ship1T * H * 0.22 + Math.sin(ship1T * Math.PI * 2) * 32;
+      const s1y =
+        routeBaseY -
+        ship1T * H * 0.22 +
+        Math.sin(ship1T * Math.PI * 2) * 30;
       const s1Heading = -0.36 + Math.cos(ship1T * Math.PI * 2) * 0.2;
 
       ctx.beginPath();
-      for (let u = 0; u <= 1; u += 0.04) {
+      for (let u = 0; u <= 1; u += 0.05) {
         const tx = W * (0.18 + u * 0.66);
-        const ty = routeBaseY - u * H * 0.22 + Math.sin(u * Math.PI * 2) * 32;
+        const ty = routeBaseY - u * H * 0.22 + Math.sin(u * Math.PI * 2) * 30;
         if (u === 0) ctx.moveTo(tx, ty);
         else ctx.lineTo(tx, ty);
       }
-      ctx.strokeStyle = "rgba(6, 182, 212, 0.42)";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(6, 182, 212, 0.38)";
+      ctx.lineWidth = 1.8;
       ctx.setLineDash([7, 7]);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -618,10 +586,10 @@ export default function LandingPage({
         time
       );
 
-      const ship2T = (time * 0.038 + 0.48 + sp * 0.22) % 1;
+      const ship2T = (time * 0.036 + 0.48 + sp * 0.2) % 1;
       const s2x = W * (0.85 - ship2T * 0.5);
       const s2y =
-        H * (0.28 + ship2T * 0.36) + Math.cos(ship2T * Math.PI * 2) * 20;
+        H * (0.28 + ship2T * 0.36) + Math.cos(ship2T * Math.PI * 2) * 18;
       const s2Heading = 2.5 - Math.sin(ship2T * Math.PI * 2) * 0.14;
       drawAutonomousShip(
         s2x,
@@ -641,33 +609,30 @@ export default function LandingPage({
     };
   }, []);
 
-  // Interactive Ship-Iceberg Collision Simulator Canvas (Titanic 1912 vs ARGOS 2026)
+  // 2. IntersectionObserver-Gated Ship-Iceberg Collision Simulator Canvas (Only animates when in viewport)
   useEffect(() => {
     const canvas = collisionCanvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: false });
     let animId = 0;
     let progress = 0;
+    let isVisible = false;
     const speedFactor = simSpeedKnots / 22.5;
 
-    const sparks = Array.from({ length: 16 }, (_, i) => ({
-      angle: (i / 16) * Math.PI * 2,
-      speed: 1.2 + (i % 4) * 0.65,
+    const sparks = Array.from({ length: 14 }, (_, i) => ({
+      angle: (i / 14) * Math.PI * 2,
+      speed: 1.2 + (i % 4) * 0.6,
     }));
 
     const renderSim = () => {
+      if (!isVisible) return;
       animId = requestAnimationFrame(renderSim);
       progress += 0.0036 * speedFactor;
       if (progress > 1) progress = 0;
 
       const W = canvas.width;
       const H = canvas.height;
-      ctx.clearRect(0, 0, W, H);
-
-      const bg = ctx.createLinearGradient(0, 0, W, H);
-      bg.addColorStop(0, "#040a14");
-      bg.addColorStop(1, "#071426");
-      ctx.fillStyle = bg;
+      ctx.fillStyle = "#040b16";
       ctx.fillRect(0, 0, W, H);
 
       const bergX = W * 0.65;
@@ -733,7 +698,7 @@ export default function LandingPage({
         }
       } else {
         ctx.beginPath();
-        for (let u = 0; u <= 1; u += 0.02) {
+        for (let u = 0; u <= 1; u += 0.025) {
           const px = 40 + u * (W - 80);
           const detour = Math.exp(-Math.pow((u - 0.6) / 0.19, 2)) * -66;
           const py = H * 0.52 + detour;
@@ -741,7 +706,7 @@ export default function LandingPage({
           else ctx.lineTo(px, py);
         }
         ctx.strokeStyle = "rgba(6, 182, 212, 0.85)";
-        ctx.lineWidth = 2.1;
+        ctx.lineWidth = 2;
         ctx.stroke();
 
         const detourNow =
@@ -802,8 +767,28 @@ export default function LandingPage({
       );
     };
 
-    renderSim();
-    return () => cancelAnimationFrame(animId);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting) {
+          if (!isVisible) {
+            isVisible = true;
+            renderSim();
+          }
+        } else {
+          isVisible = false;
+          cancelAnimationFrame(animId);
+        }
+      },
+      { threshold: 0.05 }
+    );
+    observer.observe(canvas);
+
+    return () => {
+      isVisible = false;
+      cancelAnimationFrame(animId);
+      observer.disconnect();
+    };
   }, [collisionMode, simSpeedKnots]);
 
   const stations = [
@@ -857,11 +842,12 @@ export default function LandingPage({
         aria-hidden="true"
       />
 
-      {/* Top Scroll Progress Hairline */}
+      {/* Top Scroll Progress Hairline (GPU transform-driven, zero React re-renders) */}
       <div className="argos-scroll-progress-bar">
         <div
+          ref={progressFillRef}
           className="argos-scroll-progress-fill"
-          style={{ width: `${scrollPct}%` }}
+          style={{ transform: "scaleX(0)" }}
         />
       </div>
 
@@ -982,15 +968,17 @@ export default function LandingPage({
         onScroll={handleScroll}
       >
         {/* ====================================================================
-            SECTION 1: EDITORIAL HERO (Inspired by Reference Layout)
+            SECTION 1: EDITORIAL HERO (Clean Typography, No Highlight Box, No VIEW Block)
             ==================================================================== */}
         <section className="argos-ed-hero">
           <div className="argos-ed-hero-top">
+            <span className="argos-ed-eyebrow mono">
+              ANTARCTIC SEA-ICE &amp; ROUTE GUIDANCE
+            </span>
             <h1 className="argos-ed-display-title">ARGOS</h1>
             <p className="argos-ed-quote">
-              Guiding polar vessels safely through{" "}
-              <mark className="argos-highlight">shifting Antarctic sea ice</mark>{" "}
-              with seven-day satellite intelligence.
+              Guiding polar vessels safely through shifting Antarctic sea ice
+              with seven-day satellite intelligence and autonomous pathfinding.
             </p>
 
             <div className="argos-ed-hero-actions">
@@ -1013,27 +1001,8 @@ export default function LandingPage({
             </div>
           </div>
 
-          {/* Lower Hero Horizon: Two Minimal Floating Notes on Right + Centered Square View Anchor */}
+          {/* Lower Hero Horizon: Two Minimal Floating Notes on Right */}
           <div className="argos-ed-hero-horizon">
-            <div className="argos-ed-center-anchor">
-              <button
-                type="button"
-                className="argos-view-square-btn"
-                onClick={() => onEnterConsole()}
-                title="Open 3D Polar Globe"
-              >
-                VIEW
-              </button>
-              <button
-                type="button"
-                className="argos-view-scroll-sub"
-                onClick={() => scrollToId("about")}
-                title="Scroll Down"
-              >
-                ↓
-              </button>
-            </div>
-
             <div className="argos-ed-floating-notes">
               <div
                 className="argos-ed-note-card"
@@ -1076,6 +1045,7 @@ export default function LandingPage({
           <div className="argos-ed-split">
             {/* Left: Crisp, Short Editorial Lines (Zero Metric Boxes) */}
             <div className="argos-ed-prose-col">
+              <span className="argos-ed-eyebrow mono">01 · THE CHALLENGE</span>
               <h2 className="argos-ed-h2">
                 See the ice seven days ahead,
                 <br />
@@ -1090,9 +1060,9 @@ export default function LandingPage({
               </p>
 
               <p className="argos-ed-sub-p">
-                <mark className="argos-highlight">ARGOS Passage</mark>{" "}
-                continuously forecasts ice movement and computes a live path
-                that adapts to your ship’s speed and destination.
+                <strong>ARGOS Passage</strong> continuously forecasts ice
+                movement and computes a live path that adapts to your ship’s
+                speed and destination.
               </p>
 
               <p className="argos-ed-whisper">
@@ -1231,6 +1201,7 @@ export default function LandingPage({
 
             {/* Right: Minimal Editorial Heading & Short Explanation */}
             <div className="argos-ed-prose-col">
+              <span className="argos-ed-eyebrow mono">02 · HOW IT WORKS</span>
               <h2 className="argos-ed-h2">
                 Built for clarity on the
                 <br />
@@ -1240,7 +1211,7 @@ export default function LandingPage({
               <p className="argos-ed-lead-p">
                 Instead of overwhelming navigators with raw satellite files,
                 ARGOS turns complex polar weather and sea-ice forecasts into a{" "}
-                <mark className="argos-highlight">single clear route</mark>.
+                <strong>single clear route</strong>.
               </p>
 
               <p className="argos-ed-sub-p">
@@ -1279,6 +1250,9 @@ export default function LandingPage({
           <div className="argos-ed-split">
             {/* Left: Concise Story of Why Early Iceberg Detection Matters */}
             <div className="argos-ed-prose-col">
+              <span className="argos-ed-eyebrow mono">
+                03 · ICEBERG AVOIDANCE
+              </span>
               <h2 className="argos-ed-h2">
                 From thirty-seven seconds
                 <br />
@@ -1287,14 +1261,15 @@ export default function LandingPage({
 
               <p className="argos-ed-lead-p">
                 In April 1912, lookouts aboard <strong>RMS Titanic</strong>{" "}
-                spotted an unlit iceberg just thirty-seven seconds before impact—too
-                late to swing the hull clear of its submerged ice spur.
+                spotted an unlit iceberg just thirty-seven seconds before
+                impact—too late to swing the hull clear of its submerged ice
+                spur.
               </p>
 
               <p className="argos-ed-sub-p">
-                With <mark className="argos-highlight">satellite radar tracking</mark>{" "}
-                and automated pathfinding, ARGOS routes vessels safely around
-                iceberg hazard zones days before visual contact.
+                With <strong>satellite radar tracking</strong> and automated
+                pathfinding, ARGOS routes vessels safely around iceberg hazard
+                zones days before visual contact.
               </p>
 
               <div className="argos-ed-inline-actions">
