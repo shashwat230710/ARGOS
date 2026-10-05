@@ -673,13 +673,19 @@ export class PolarUNet {
  *     contrib_i = max(0, w_i * x_i) / sum_j max(0, w_j * x_j)
  */
 export interface IcebergCautionMetrics {
+  name: string;
+  architecture: string;
   accuracy: number;
+  valAccuracy: number;
   precision: number;
   recall: number;
   f1Score: number;
   brierScore: number;
+  valBrierScore: number;
+  trainLoss: number;
   totalEpochs: number;
   sampleCount: number;
+  trainingSamples: number;
   featureNames: string[];
   weights: number[];
   bias: number;
@@ -715,17 +721,31 @@ export class IcebergCautionClassifier {
     ]);
     this.bias = -2.35;
     this.lastValMetrics = {
+      name: "IcebergCautionClassifier",
+      architecture: "8-Feature Physics-Informed Logistic Hazard Classifier",
       accuracy: 0,
+      valAccuracy: 0,
       precision: 0,
       recall: 0,
       f1Score: 0,
       brierScore: 0,
+      valBrierScore: 0,
+      trainLoss: 0,
       totalEpochs: 0,
       sampleCount: 0,
+      trainingSamples: 0,
       featureNames: this.featureNames,
       weights: Array.from(this.weights),
       bias: this.bias,
     };
+  }
+
+  public predictProbabilityFast(feat: Float64Array): number {
+    let logit = this.bias;
+    for (let i = 0; i < this.numFeatures; i++) {
+      logit += this.weights[i] * feat[i];
+    }
+    return IcebergCautionClassifier.sigmoid(logit * 0.68);
   }
 
   public static sigmoid(z: number): number {
@@ -845,9 +865,11 @@ export class IcebergCautionClassifier {
     action: string;
     attributions: Array<{
       name: string;
+      feature: string;
       featureValue: number;
       contribution: number;
       sharePct: number;
+      share_pct: number;
     }>;
     dominantReason: string;
   } {
@@ -863,17 +885,23 @@ export class IcebergCautionClassifier {
       sumPos += p;
     }
 
+    const calibratedLogit = logit * 0.68;
     const probability = Number(
-      IcebergCautionClassifier.sigmoid(logit).toFixed(4)
+      IcebergCautionClassifier.sigmoid(calibratedLogit).toFixed(4)
     );
     const cls = IcebergCautionClassifier.classifyProbability(probability);
 
-    const attributions = this.featureNames.map((name, i) => ({
-      name,
-      featureValue: Number(feat[i].toFixed(3)),
-      contribution: Number(posContribs[i].toFixed(3)),
-      sharePct: Math.round((posContribs[i] / sumPos) * 100),
-    }));
+    const attributions = this.featureNames.map((name, i) => {
+      const pct = Math.round((posContribs[i] / sumPos) * 100);
+      return {
+        name,
+        feature: name,
+        featureValue: Number(feat[i].toFixed(3)),
+        contribution: Number(posContribs[i].toFixed(3)),
+        sharePct: pct,
+        share_pct: pct,
+      };
+    });
 
     attributions.sort((a, b) => b.contribution - a.contribution);
     const top1 = attributions[0];
@@ -939,19 +967,35 @@ export class IcebergCautionClassifier {
       this.totalEpochs += 1;
     }
 
-    // Evaluate on validation set
+    // Evaluate on validation & training sets
     let tp = 0;
     let fp = 0;
     let tn = 0;
     let fn = 0;
     let brierSum = 0;
+    let ceLossSum = 0;
+
+    for (const s of trainSet) {
+      let z = this.bias;
+      for (let f = 0; f < this.numFeatures; f++) {
+        z += this.weights[f] * s.feat[f];
+      }
+      const p = Math.min(
+        0.999999,
+        Math.max(0.000001, IcebergCautionClassifier.sigmoid(z * 0.68))
+      );
+      ceLossSum += -(
+        s.label * Math.log(p) +
+        (1 - s.label) * Math.log(1 - p)
+      );
+    }
 
     for (const s of valSet) {
       let z = this.bias;
       for (let f = 0; f < this.numFeatures; f++) {
         z += this.weights[f] * s.feat[f];
       }
-      const p = IcebergCautionClassifier.sigmoid(z);
+      const p = IcebergCautionClassifier.sigmoid(z * 0.68);
       const pred = p >= 0.5 ? 1 : 0;
       const truth = s.label >= 0.5 ? 1 : 0;
       if (pred === 1 && truth === 1) tp++;
@@ -969,15 +1013,24 @@ export class IcebergCautionClassifier {
       ((2 * precision * recall) / Math.max(1e-6, precision + recall)).toFixed(4)
     );
     const brierScore = Number((brierSum / nVal).toFixed(4));
+    const trainLoss = Number(
+      (ceLossSum / Math.max(1, trainSet.length)).toFixed(4)
+    );
 
     this.lastValMetrics = {
+      name: "IcebergCautionClassifier",
+      architecture: "8-Feature Physics-Informed Logistic Hazard Classifier",
       accuracy,
+      valAccuracy: accuracy,
       precision,
       recall,
       f1Score,
       brierScore,
+      valBrierScore: brierScore,
+      trainLoss,
       totalEpochs: this.totalEpochs,
       sampleCount: samples.length,
+      trainingSamples: samples.length,
       featureNames: this.featureNames,
       weights: Array.from(this.weights).map((w) => Number(w.toFixed(4))),
       bias: Number(this.bias.toFixed(4)),

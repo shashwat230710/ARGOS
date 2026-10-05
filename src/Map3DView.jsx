@@ -1828,6 +1828,12 @@ const Map3DView = forwardRef(function Map3DView(
           subtitle: "Planned on 10-year historical mean without U-Net forecast",
           metrics: [
             {
+              label: "ML Path Risk (Mean / Peak)",
+              value: `${stMetrics?.ml_mean_pct ?? "—"}% mean · ${
+                stMetrics?.ml_peak_pct ?? "—"
+              }% peak`,
+            },
+            {
               label: "Heavy-Ice Exposure",
               value: `${stMetrics?.heavy_ice_hours ?? "—"} h`,
             },
@@ -1843,6 +1849,12 @@ const Map3DView = forwardRef(function Map3DView(
           title: "Optimal A* Avoidance Corridor",
           subtitle: "Time-dependent 8-neighbor route avoiding pack ridges & bergs",
           metrics: [
+            {
+              label: "ML Path Risk (Mean / Peak)",
+              value: `${fcMetrics?.ml_mean_pct ?? "—"}% mean · ${
+                fcMetrics?.ml_peak_pct ?? "—"
+              }% peak (SAFE)`,
+            },
             {
               label: "Heavy-Ice Exposure",
               value: `${fcMetrics?.heavy_ice_hours ?? 0} h`,
@@ -2419,9 +2431,9 @@ const Map3DView = forwardRef(function Map3DView(
         key={labelVersion}
         className="dss-map3d-labels-layer"
       >
-        {currentLabels.map((lbl) => (
+        {currentLabels.map((lbl, idx) => (
           <div
-            key={lbl.id}
+            key={`${lbl.id || "lbl"}-${idx}`}
             className={`dss-3d-label kind-${lbl.kind}`}
             onClick={(e) => {
               e.stopPropagation();

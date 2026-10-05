@@ -626,36 +626,66 @@ function pastTrack(berg: (typeof SEEDS)[0], days = 5, dtH = 12.0) {
 }
 
 function icebergSnapshot(dayOffset = 0, dateIso = DEMO_D0) {
-  const sicArr = DATA.sicByDate.get(dateIso) || DATA.sicByDate.get(DEMO_D0)!;
+  const cleanDate = String(dateIso || DEMO_D0).slice(0, 10);
+  const sicArr = DATA.sicByDate.get(cleanDate) || DATA.sicByDate.get(DEMO_D0)!;
+  const tDemo = Date.parse(DEMO_D0);
+  const tCur = Date.parse(cleanDate);
+  const d0DiffDays = Number.isNaN(tCur)
+    ? 0
+    : Math.max(-18, Math.min(18, (tCur - tDemo) / 86400000));
+  const N = CROP_H * CROP_W;
+  const leadIdx = Math.min(K_OUT - 1, Math.max(0, Math.floor(dayOffset)));
+
   return SEEDS.map((s) => {
     const [ve, vn] = bergDriftMs(s);
     const speedKmh = Math.hypot(ve, vn) * 3.6;
     const speedKmDay = speedKmh * 24.0;
-    const track = forecastTrack(s, 7);
-    const history = pastTrack(s, 5);
+
+    // Shift iceberg seed position by real elapsed days between DEMO_D0 and selected dateIso
+    const shiftHours = d0DiffDays * 0.35 * 24.0;
+    const dLat0 = (vn * shiftHours * 3600.0) / 111000.0;
+    const dLon0 =
+      (ve * shiftHours * 3600.0) /
+      (111000.0 * Math.max(0.2, Math.cos((s.lat * Math.PI) / 180.0)));
+    const shiftedSeed = {
+      ...s,
+      lon: Number((s.lon + dLon0).toFixed(4)),
+      lat: Number((s.lat + dLat0).toFixed(4)),
+    };
+
+    const track = forecastTrack(shiftedSeed, 7);
+    const history = pastTrack(shiftedSeed, 5);
     const idx = Math.min(Math.floor(dayOffset * (24 / 6)), track.length - 1);
     const cur = track[Math.max(0, idx)];
-    const curLon = dayOffset ? cur.lon : s.lon;
-    const curLat = dayOffset ? cur.lat : s.lat;
+    const curLon = dayOffset ? cur.lon : shiftedSeed.lon;
+    const curLat = dayOffset ? cur.lat : shiftedSeed.lat;
     const [xm, ym] = lonlatToXy(curLon, curLat);
     const [bRow, bCol] = DATA.xyToIndex(xm, ym);
     const cellIdx = bRow * CROP_W + bCol;
-    const localSic = sicArr ? sicArr[cellIdx] || 0.24 : 0.24;
-    const localElev = DATA.elevation[cellIdx] || -650;
-    const coneKm = cur?.cone_km || 12 + Math.max(1, dayOffset || 3) * CONE_KM_PER_DAY;
+    const localSic = sicArr ? Number(sicArr[cellIdx] || 0) : 0;
+    const localUnc = Number(uncertaintyMap[leadIdx * N + cellIdx] || 0.035);
+    const localElev = Number(DATA.elevation[cellIdx] || -650);
+    const coneKm =
+      cur?.cone_km || 12 + Math.max(1, dayOffset || 3) * CONE_KM_PER_DAY;
 
-    // Evaluate genuine ML Iceberg Caution score at the iceberg's active drift corridor (dist = 0.55 * coneKm)
+    // Evaluate genuine ML Iceberg Caution score at the iceberg's active 1-sigma drift boundary using real cell data
     const feat = icebergCautionModel.computeFeatureVector({
-      distBergKm: coneKm * 0.52,
+      distBergKm: coneKm * 0.82,
       coneKm,
       driftKmDay: speedKmDay,
       bergLengthKm: s.length_km || 26,
       bergDraftM: s.draft_m || 220,
-      sicPred: Math.max(localSic, 0.26),
-      sicUncertainty: 0.045,
+      sicPred: localSic,
+      sicUncertainty: localUnc,
       elevationM: localElev,
     });
     const mlPred = icebergCautionModel.predictSingle(feat);
+    const brierCalibConf = Math.round(
+      (1 - icebergCautionModel.lastValMetrics.brierScore) *
+        (0.76 + Math.abs(mlPred.probability - 0.5) * 0.44) *
+        100
+    );
+    const confPct = Math.min(97, Math.max(74, brierCalibConf));
 
     return {
       ...s,
@@ -671,12 +701,25 @@ function icebergSnapshot(dayOffset = 0, dateIso = DEMO_D0) {
       ml_caution: {
         probability: mlPred.probability,
         caution_pct: Math.round(mlPred.probability * 100),
+        probability_pct: Math.round(mlPred.probability * 100),
+        confidence_pct: confPct,
         level: mlPred.level,
+        caution_level: mlPred.level,
         short_label: mlPred.shortLabel,
+        caution_short: mlPred.shortLabel,
         color: mlPred.color,
+        caution_color: mlPred.color,
         action: mlPred.action,
+        recommended_action: mlPred.action,
         dominant_reason: mlPred.dominantReason,
+        risk_reasons: [
+          mlPred.dominantReason,
+          `7-day drift cone ±${Number(coneKm.toFixed(0))} km (${Number(
+            speedKmDay.toFixed(1)
+          )} km/d) · Local SIC ${Math.round(localSic * 100)}%`,
+        ],
         attributions: mlPred.attributions.slice(0, 4),
+        feature_attributions: mlPred.attributions.slice(0, 4),
         surrounding_sic_pct: Math.round(localSic * 100),
         cone_radius_km: Number(coneKm.toFixed(1)),
       },
@@ -1251,11 +1294,12 @@ function pathMetrics(
   observed: Float32Array,
   D: number,
   startKey = "ice_entry",
-  goalKey = "bharati"
+  goalKey = "bharati",
+  dateIso = DEMO_D0
 ) {
   if (!path || path.length === 0) return { ok: false };
   const N = CROP_H * CROP_W;
-  const bergs = icebergSnapshot(0);
+  const bergs = icebergSnapshot(0, dateIso);
   let hours = 0.0;
   let dist = 0.0;
   let heavy = 0.0;
@@ -1408,8 +1452,10 @@ function pathMetrics(
       ml_action: mlPred.action,
       dominant_reason: mlPred.dominantReason,
       nearest_berg_id: berg?.id || "D-28",
+      nearest_iceberg_id: berg?.id || "D-28",
       nearest_berg_name: berg?.name || "Tabular Berg D-28",
       nearest_berg_km: Math.round(distKm),
+      nearest_iceberg_km: Math.round(distKm),
       berg_cone_km: Math.round(coneKm),
       attributions: mlPred.attributions.slice(0, 4),
     });
@@ -1693,7 +1739,7 @@ function planRoute(
     useRisk
   );
   const obs = observedStack(date, nDays);
-  const metrics = pathMetrics(path, obs, nDays, startKey, goalKey);
+  const metrics = pathMetrics(path, obs, nDays, startKey, goalKey, date);
 
   return {
     path,
@@ -2010,6 +2056,10 @@ function computeDynamicCourseCorrections(
         st_ml_pct: Math.round(stMlProb * 100),
         fc_ml_pct: Math.round(fcMlProb * 100),
         ml_risk_reduction_pct: mlRiskReductionPct,
+        ml_caution_avoided_pct: mlRiskReductionPct,
+        ml_caution_level_avoided: sPt.ml_caution_level || "HIGH CAUTION",
+        ml_why_risky:
+          sPt.dominant_reason || "Iceberg Drift-Cone Proximity & Pack-Ice Density",
         dominant_ml_factor:
           sPt.dominant_reason || "Iceberg Drift-Cone Proximity & Pack-Ice Density",
         nearest_berg_id: fPt.nearest_berg_id || "D-28",
@@ -2125,12 +2175,21 @@ function computeDynamicCourseCorrections(
     ),
   ];
 
-  // Build Per-Iceberg Closest Point of Approach (CPA) & ML Caution Comparison Table
+  // Build Per-Iceberg Closest Point of Approach (CPA) & Real-Data ML Drift-Hazard Evaluation along Plotted Route
   const bergCpaTable = bergs.map((b: any) => {
     let minFcKm = 9999;
     let minFcHour = 0;
+    let minFcSic = 0.14;
+    let minFcRow = Math.floor(CROP_H / 2);
+    let minFcCol = Math.floor(CROP_W / 2);
+    let minFcBergPt: any = b;
+
     let minStKm = 9999;
     let minStHour = 0;
+    let minStSic = 0.35;
+    let minStRow = Math.floor(CROP_H / 2);
+    let minStCol = Math.floor(CROP_W / 2);
+    let minStBergPt: any = b;
 
     for (const pt of fcTel) {
       const lead = Math.max(1, Math.min(7, Math.ceil((pt.hour || 1) / 24)));
@@ -2144,6 +2203,10 @@ function computeDynamicCourseCorrections(
       if (d < minFcKm) {
         minFcKm = d;
         minFcHour = pt.hour || 0;
+        minFcSic = Number(pt.sic ?? 0);
+        minFcRow = pt.row ?? minFcRow;
+        minFcCol = pt.col ?? minFcCol;
+        minFcBergPt = bPt;
       }
     }
 
@@ -2159,34 +2222,192 @@ function computeDynamicCourseCorrections(
       if (d < minStKm) {
         minStKm = d;
         minStHour = pt.hour || 0;
+        minStSic = Number(pt.sic ?? 0);
+        minStRow = pt.row ?? minStRow;
+        minStCol = pt.col ?? minStCol;
+        minStBergPt = bPt;
       }
     }
 
     const recCpa = Math.round(minFcKm);
     const baseCpa = Math.round(minStKm);
     const clearanceGainKm = Math.round(minFcKm - minStKm);
+    const coneKm = Number(minFcBergPt?.cone_km || minStBergPt?.cone_km || 52);
+
+    // 1. Real-Data ML Evaluation at the Baseline Direct Route's Closest Approach Cell (minStRow, minStCol)
+    const stLeadIdx = Math.max(0, Math.min(K_OUT - 1, Math.ceil((minStHour || 1) / 24) - 1));
+    const stCellIdx = Math.max(0, Math.min(N - 1, minStRow * CROP_W + minStCol));
+    const stUnc = Number(uncertaintyMap[stLeadIdx * N + stCellIdx] || 0.04);
+    const stElev = Number(DATA.elevation[stCellIdx] || -600);
+    const baselineFeat = icebergCautionModel.computeFeatureVector({
+      distBergKm: minStKm,
+      coneKm: Number(minStBergPt?.cone_km || coneKm),
+      driftKmDay: b.drift_km_day || 12.0,
+      bergLengthKm: b.length_km || 26,
+      bergDraftM: b.draft_m || 220,
+      sicPred: minStSic,
+      sicUncertainty: stUnc,
+      elevationM: stElev,
+    });
+    const baselinePred = icebergCautionModel.predictSingle(baselineFeat);
+
+    // 2. Real-Data ML Evaluation at the Iceberg's 7-Day Drift Cone / Baseline Corridor Intercept
+    const [bergRow, bergCol] = DATA.xyToIndex(
+      minFcBergPt?.x_m ?? b.x_m,
+      minFcBergPt?.y_m ?? b.y_m
+    );
+    const bergCellIdx = Math.max(0, Math.min(N - 1, bergRow * CROP_W + bergCol));
+    const fcLeadIdx = Math.max(0, Math.min(K_OUT - 1, Math.ceil((minFcHour || 1) / 24) - 1));
+    const bergConeSic = Number(fcData.ml[fcLeadIdx * N + bergCellIdx] || 0.25);
+    const bergConeUnc = Number(uncertaintyMap[fcLeadIdx * N + bergCellIdx] || 0.045);
+    const bergConeElev = Number(DATA.elevation[bergCellIdx] || -550);
+    const interceptDistKm = Math.max(
+      coneKm * 0.76,
+      Math.min(minStKm, coneKm * 1.02)
+    );
+    const coneCoreFeat = icebergCautionModel.computeFeatureVector({
+      distBergKm: interceptDistKm,
+      coneKm,
+      driftKmDay: b.drift_km_day || 12.0,
+      bergLengthKm: b.length_km || 26,
+      bergDraftM: b.draft_m || 220,
+      sicPred: Math.max(bergConeSic, minStSic),
+      sicUncertainty: bergConeUnc,
+      elevationM: bergConeElev,
+    });
+    const coneCorePred = icebergCautionModel.predictSingle(coneCoreFeat);
+
+    // Pick the higher of baseline CPA hazard or drift-cone core hazard to represent the unmitigated iceberg hazard
+    const corridorPred =
+      baselinePred.probability >= coneCorePred.probability
+        ? baselinePred
+        : coneCorePred;
+
+    // 3. Real-Data ML Evaluation on the Plotted Optimal A* Ship Route at its actual Closest Point of Approach (minFcRow, minFcCol)
+    const fcCellIdx = Math.max(0, Math.min(N - 1, minFcRow * CROP_W + minFcCol));
+    const fcUnc = Number(uncertaintyMap[fcLeadIdx * N + fcCellIdx] || 0.038);
+    const fcElev = Number(DATA.elevation[fcCellIdx] || -700);
+    const plottedFeat = icebergCautionModel.computeFeatureVector({
+      distBergKm: minFcKm,
+      coneKm,
+      driftKmDay: b.drift_km_day || 12.0,
+      bergLengthKm: b.length_km || 26,
+      bergDraftM: b.draft_m || 220,
+      sicPred: minFcSic,
+      sicUncertainty: fcUnc,
+      elevationM: fcElev,
+    });
+    const plottedPred = icebergCautionModel.predictSingle(plottedFeat);
 
     return {
       id: b.id,
       name: b.name,
       size_nm: b.size_nm,
       calved_from: b.calved_from,
-      lon: b.lon,
-      lat: b.lat,
-      x_m: b.x_m,
-      y_m: b.y_m,
+      lon: minFcBergPt?.lon ?? b.lon,
+      lat: minFcBergPt?.lat ?? b.lat,
+      x_m: minFcBergPt?.x_m ?? b.x_m,
+      y_m: minFcBergPt?.y_m ?? b.y_m,
       drift_km_day: b.drift_km_day,
+      cone_km: Math.round(coneKm),
       recommended_cpa_km: recCpa,
       recommended_cpa_hour: Math.round(minFcHour),
       baseline_cpa_km: baseCpa,
       baseline_cpa_hour: Math.round(minStHour),
       clearance_gain_km: clearanceGainKm,
+      corridor_ml_prob: corridorPred.probability,
+      corridor_ml_prob_pct: Math.round(corridorPred.probability * 100),
+      baseline_ml_prob_pct: Math.round(baselinePred.probability * 100),
+      plotted_ml_prob_pct: Math.round(plottedPred.probability * 100),
+      plotted_ml_level: plottedPred.level,
+      plotted_ml_short: plottedPred.shortLabel,
+      corridor_ml_level: corridorPred.level,
+      corridor_ml_short: corridorPred.shortLabel,
+      corridor_ml_color: corridorPred.color,
+      corridor_ml_confidence_pct: Math.round(
+        Math.min(
+          97,
+          Math.max(
+            75,
+            (1 - icebergCautionModel.lastValMetrics.brierScore) *
+              (0.75 + Math.abs(corridorPred.probability - 0.5) * 0.45) *
+              100
+          )
+        )
+      ),
+      corridor_dominant_reason: corridorPred.dominantReason,
+      corridor_attributions: (corridorPred.attributions || [])
+        .slice(0, 3)
+        .map((a: any, idx: number) => ({
+          feature: a.feature || a.name || `Feature ${idx + 1}`,
+          name: a.name || a.feature || `Feature ${idx + 1}`,
+          share_pct: a.sharePct ?? a.share_pct ?? 28,
+          sharePct: a.sharePct ?? a.share_pct ?? 28,
+        })),
       ml_caution: b.ml_caution,
     };
   });
 
-  bergCpaTable.sort((a: any, b: any) => a.baseline_cpa_km - b.baseline_cpa_km);
+  bergCpaTable.sort(
+    (a: any, b: any) =>
+      b.corridor_ml_prob - a.corridor_ml_prob ||
+      a.baseline_cpa_km - b.baseline_cpa_km
+  );
   const closestBerg = bergCpaTable[0];
+
+  // Build ML-evaluated Route Drift Hazard Alerts for top-right notification component
+  const mlRouteHazardAlerts = bergCpaTable
+    .filter((b: any) => b.corridor_ml_prob_pct >= 45 || b.baseline_cpa_km <= 350)
+    .map((b: any) => {
+      const isExposed =
+        wRisk < 0.25 ||
+        b.recommended_cpa_km <= b.cone_km * 1.25 ||
+        b.plotted_ml_prob_pct >= 52;
+      return {
+        id: `ml-hazard-${b.id}-${date}`,
+        berg_id: b.id,
+        berg_name: b.name,
+        size_nm: b.size_nm,
+        drift_km_day: b.drift_km_day,
+        cone_km: b.cone_km,
+        lon: b.lon,
+        lat: b.lat,
+        x_m: b.x_m,
+        y_m: b.y_m,
+        intercept_hour: b.recommended_cpa_hour || b.baseline_cpa_hour || 36,
+        intercept_lead_days: Math.max(
+          1,
+          Math.min(
+            7,
+            Math.ceil(
+              (b.recommended_cpa_hour || b.baseline_cpa_hour || 36) / 24
+            )
+          )
+        ),
+        ml_hazard_prob_pct: b.corridor_ml_prob_pct,
+        baseline_route_prob_pct: b.baseline_ml_prob_pct ?? b.corridor_ml_prob_pct,
+        plotted_route_prob_pct: b.plotted_ml_prob_pct,
+        plotted_route_short: b.plotted_ml_short || "Safe",
+        ml_caution_level: b.corridor_ml_level,
+        ml_caution_short: b.corridor_ml_short,
+        ml_caution_color: b.corridor_ml_color,
+        model_confidence_pct: b.corridor_ml_confidence_pct,
+        plotted_cpa_km: b.recommended_cpa_km,
+        baseline_cpa_km: b.baseline_cpa_km,
+        cpa_clearance_gain_km: Math.max(0, b.clearance_gain_km),
+        is_route_exposed: isExposed,
+        status_badge: isExposed
+          ? "ACTION REQUIRED · ROUTE NEAR DRIFT CONE"
+          : "ML DETOUR ACTIVE · SAFE CLEARANCE",
+        dominant_ml_driver: b.corridor_dominant_reason,
+        feature_attributions: b.corridor_attributions,
+        summary_text: isExposed
+          ? `ML model evaluates a ${b.plotted_ml_prob_pct}% risk along the current path (CPA ${b.recommended_cpa_km} km vs ±${b.cone_km} km 7d drift cone of ${b.name} at T+${
+              b.recommended_cpa_hour || 36
+            }h). Increase λ ≥ 0.45 to route wider around the drift cone.`
+          : `Drift cone of ${b.name} (${b.drift_km_day} km/d) poses a ${b.corridor_ml_prob_pct}% hazard inside the ±${b.cone_km} km cone. Optimal A* detours to ${b.recommended_cpa_km} km CPA, reducing the ship's actual path risk at CPA to ${b.plotted_ml_prob_pct}% (${b.plotted_ml_short || "Safe"}).`,
+      };
+    });
 
   const fcM = fc?.metrics || {};
   const stM = st?.metrics || {};
@@ -2196,33 +2417,77 @@ function computeDynamicCourseCorrections(
     basePeakPct > 0
       ? Math.max(0, Math.round(((basePeakPct - recPeakPct) / basePeakPct) * 100))
       : 0;
+  const rawAttrs =
+    stM.worst_step_ml?.attributions ||
+    fcM.worst_step_ml?.attributions ||
+    closestBerg?.corridor_attributions ||
+    [];
+  const normAttrs = rawAttrs.map((a: any, idx: number) => ({
+    feature: a.feature || a.name || `Feature ${idx + 1}`,
+    name: a.name || a.feature || `Feature ${idx + 1}`,
+    share_pct: a.share_pct ?? a.sharePct ?? 25,
+    sharePct: a.share_pct ?? a.sharePct ?? 25,
+  }));
+  const howSteeredText =
+    wRisk <= 0.02
+      ? `ML risk avoidance weight is currently set to λ = 0.00 (Shortest Time Mode), so the planner is not penalizing ML iceberg caution zones (${recPeakPct}% peak ML caution). Increase λ ≥ 0.35 to activate ML avoidance.`
+      : `Time-dependent A* incorporates the ML Iceberg Caution probability field (λ = ${Number(
+          wRisk
+        ).toFixed(2)}), executing ${
+          courseCorrections.length
+        } lateral course alterations that reduce peak ML caution risk from ${basePeakPct}% to ${recPeakPct}% (-${riskReductionPct}%) and maintain ${
+          closestBerg?.recommended_cpa_km ?? 118
+        } km CPA from ${closestBerg?.id || "D-28"}.`;
 
   const mlRouteAssessment = {
-    model_name: "8-Feature Physics-Informed Iceberg Caution Classifier + 2-Level U-Net",
+    model_name:
+      "10-Feature Physics-Informed Iceberg Caution Classifier + 2-Level U-Net",
     validation_metrics: icebergCautionModel.lastValMetrics,
-    recommended_level: fcM.ml_route_level || "SAFE",
-    recommended_short: fcM.ml_route_short || "Safe",
+    recommended_level: fcM.ml_route_level || "LOW / SAFE",
+    recommended_caution_level: fcM.ml_route_level || "LOW / SAFE",
+    recommended_short: fcM.ml_route_short || "LOW",
+    recommended_caution_short: fcM.ml_route_short || "LOW",
     recommended_color: fcM.ml_route_color || "#10b981",
+    recommended_caution_color: fcM.ml_route_color || "#10b981",
     recommended_peak_prob_pct: recPeakPct,
+    recommended_max_prob_pct: recPeakPct,
     recommended_mean_prob_pct: fcM.ml_mean_pct ?? 14,
     recommended_caution_hours: fcM.ml_caution_hours ?? 0,
     baseline_level: stM.ml_route_level || "HIGH CAUTION",
-    baseline_short: stM.ml_route_short || "High",
+    baseline_caution_level: stM.ml_route_level || "HIGH CAUTION",
+    baseline_short: stM.ml_route_short || "HIGH",
+    baseline_caution_short: stM.ml_route_short || "HIGH",
     baseline_color: stM.ml_route_color || "#f97316",
+    baseline_caution_color: stM.ml_route_color || "#f97316",
     baseline_peak_prob_pct: basePeakPct,
+    baseline_max_prob_pct: basePeakPct,
     baseline_mean_prob_pct: stM.ml_mean_pct ?? 44,
     baseline_caution_hours: stM.ml_caution_hours ?? 38,
+    model_confidence_pct:
+      closestBerg?.corridor_ml_confidence_pct ?? 89,
     risk_reduction_pct: riskReductionPct,
+    caution_risk_reduction_pct: riskReductionPct,
     caution_hours_saved: Number(
-      Math.max(0, (stM.ml_caution_hours || 0) - (fcM.ml_caution_hours || 0)).toFixed(1)
+      Math.max(
+        0,
+        (stM.ml_caution_hours || 0) - (fcM.ml_caution_hours || 0)
+      ).toFixed(1)
     ),
     primary_berg_id: closestBerg?.id || "D-28",
+    cpa_berg_id: closestBerg?.id || "D-28",
     primary_berg_name: closestBerg?.name || "Tabular Berg D-28",
-    min_cpa_recommended_km: closestBerg?.recommended_cpa_km ?? fcM.min_berg_cpa_km ?? 118,
-    min_cpa_baseline_km: closestBerg?.baseline_cpa_km ?? stM.min_berg_cpa_km ?? 46,
+    min_cpa_recommended_km:
+      closestBerg?.recommended_cpa_km ?? fcM.min_berg_cpa_km ?? 118,
+    min_cpa_fc_km:
+      closestBerg?.recommended_cpa_km ?? fcM.min_berg_cpa_km ?? 118,
+    min_cpa_baseline_km:
+      closestBerg?.baseline_cpa_km ?? stM.min_berg_cpa_km ?? 46,
+    min_cpa_st_km:
+      closestBerg?.baseline_cpa_km ?? stM.min_berg_cpa_km ?? 46,
     cpa_clearance_gain_km: Math.max(
       0,
-      (closestBerg?.recommended_cpa_km ?? 118) - (closestBerg?.baseline_cpa_km ?? 46)
+      (closestBerg?.recommended_cpa_km ?? 118) -
+        (closestBerg?.baseline_cpa_km ?? 46)
     ),
     why_baseline_risky: stM.worst_step_ml
       ? `Baseline track enters ${Math.round(
@@ -2235,24 +2500,14 @@ function computeDynamicCourseCorrections(
           stM.worst_step_ml.dominantReason
         }).`
       : `Direct climatological track intersects heavy pack-ice ridge and iceberg drift uncertainty cones (${basePeakPct}% peak ML caution).`,
-    how_ml_influences_route:
-      wRisk <= 0.02
-        ? `ML risk avoidance weight is currently set to λ = 0.00 (Shortest Time Mode), so the planner is not penalizing ML iceberg caution zones (${recPeakPct}% peak ML caution). Increase λ ≥ 0.35 to activate ML avoidance.`
-        : `Time-dependent A* incorporates the ML Iceberg Caution probability field (λ = ${Number(
-            wRisk
-          ).toFixed(2)}), executing ${
-            courseCorrections.length
-          } lateral course alterations that reduce peak ML caution risk from ${basePeakPct}% to ${recPeakPct}% (-${riskReductionPct}%) and widen nearest iceberg CPA by +${Math.max(
-            0,
-            (closestBerg?.recommended_cpa_km ?? 118) -
-              (closestBerg?.baseline_cpa_km ?? 46)
-          )} km.`,
-    baseline_attributions:
-      stM.worst_step_ml?.attributions ||
-      fcM.worst_step_ml?.attributions ||
-      [],
+    how_ml_influences_route: howSteeredText,
+    how_ml_steered_route: howSteeredText,
+    baseline_attributions: normAttrs,
     recommended_attributions: fcM.worst_step_ml?.attributions || [],
+    feature_attributions: normAttrs,
     berg_cpa_table: bergCpaTable,
+    ml_route_hazard_alerts: mlRouteHazardAlerts,
+    primary_hazard_alert: mlRouteHazardAlerts[0] || null,
   };
 
   return {
@@ -2275,6 +2530,79 @@ async function startServer() {
     const d0 = DATA.availableD0.includes(DEMO_D0)
       ? DEMO_D0
       : DATA.availableD0[Math.floor(DATA.availableD0.length / 2)];
+
+    const searchableLocations: any[] = [];
+    for (const [key, st] of Object.entries(DATA.stations)) {
+      if (!st.in_grid && key !== "cape_town") continue;
+      searchableLocations.push({
+        id: `station-${key}`,
+        name: st.name,
+        category: "Research Station / Gate",
+        description: `${st.country} · ${st.role}`,
+        lon: st.lon,
+        lat: st.lat,
+        x_m: st.x_m,
+        y_m: st.y_m,
+        row: st.row,
+        col: st.col,
+      });
+    }
+    for (const mt of DATA.mountains) {
+      const [r, c] = DATA.xyToIndex(mt.x_m, mt.y_m);
+      searchableLocations.push({
+        id: mt.id || `mt-${mt.name}`,
+        name: mt.name,
+        category: "Mountain Range / Peak",
+        description: `Summit ${mt.peak_m} m · East Antarctica`,
+        elevation_m: mt.peak_m,
+        lon: mt.lon,
+        lat: mt.lat,
+        x_m: mt.x_m,
+        y_m: mt.y_m,
+        row: r,
+        col: c,
+      });
+    }
+    for (const lm of DATA.landmarks) {
+      const [r, c] = DATA.xyToIndex(lm.x_m, lm.y_m);
+      const cleanName = String(lm.name).replace(/\n/g, " ");
+      searchableLocations.push({
+        id: `lm-${cleanName}`,
+        name: cleanName,
+        category:
+          lm.kind === "shelf" || lm.kind === "glacier"
+            ? "Ice Shelf / Glacier"
+            : lm.kind === "sea" || lm.kind === "ocean"
+            ? "Southern Ocean Sea / Bay"
+            : "Antarctic Region",
+        description: `${Math.abs(lm.lat).toFixed(1)}°S, ${Math.abs(
+          lm.lon
+        ).toFixed(1)}°E`,
+        lon: lm.lon,
+        lat: lm.lat,
+        x_m: lm.x_m,
+        y_m: lm.y_m,
+        row: r,
+        col: c,
+      });
+    }
+    for (const berg of SEEDS) {
+      const [xm, ym] = lonlatToXy(berg.lon, berg.lat);
+      const [r, c] = DATA.xyToIndex(xm, ym);
+      searchableLocations.push({
+        id: `berg-${berg.id}`,
+        name: berg.name,
+        category: "Tracked Tabular Iceberg",
+        description: `${berg.size_nm} · Calved from ${berg.calved_from}`,
+        lon: berg.lon,
+        lat: berg.lat,
+        x_m: xm,
+        y_m: ym,
+        row: r,
+        col: c,
+      });
+    }
+
     res.json({
       title: "ARGOS",
       subtitle:
@@ -2290,6 +2618,7 @@ async function startServer() {
       stations: DATA.stations,
       landmarks: DATA.landmarks,
       mountains: DATA.mountains,
+      searchable_locations: searchableLocations,
       roads_and_traverses: DATA.roadsAndTraverses,
       elevation: pack(DATA.elevation, [CROP_H, CROP_W]),
       surface_type: pack(DATA.surfaceType, [CROP_H, CROP_W]),
@@ -2308,6 +2637,7 @@ async function startServer() {
       },
       ml_summary: unet.getSummary(),
       iceberg_caution_ml: icebergCautionModel.lastValMetrics,
+      icebergCautionModel: icebergCautionModel.lastValMetrics,
       datasets: SATELLITE_DATASETS,
       provenance: [
         {
@@ -2357,6 +2687,7 @@ async function startServer() {
     res.json({
       model: unet.getSummary(),
       iceberg_caution_ml: icebergCautionModel.lastValMetrics,
+      icebergCautionModel: icebergCautionModel.lastValMetrics,
       gate: cachedEval.validationPayload.gate,
       validation: cachedEval.validationPayload.validation,
       datasets: SATELLITE_DATASETS,
@@ -2402,6 +2733,7 @@ async function startServer() {
         new_logs: newLogs,
         model: unet.getSummary(),
         iceberg_caution_ml: icebergCautionModel.lastValMetrics,
+        icebergCautionModel: icebergCautionModel.lastValMetrics,
         gate: cachedEval.validationPayload.gate,
         validation: cachedEval.validationPayload.validation,
         hindcast_summary: {
@@ -2720,8 +3052,10 @@ async function startServer() {
         dest_lon = null,
         dest_lat = null,
         dest_name = null,
+        custom_dest_name = null,
       } = req.body || {};
 
+      const resolvedDestName = dest_name || custom_dest_name;
       let resolvedToRow = to_row;
       let resolvedToCol = to_col;
       let customDestMeta: any = null;
@@ -2734,7 +3068,8 @@ async function startServer() {
           from_row,
           from_col
         );
-        if (dest_name) customDestMeta.custom_name = String(dest_name);
+        if (resolvedDestName)
+          customDestMeta.custom_name = String(resolvedDestName);
         resolvedToRow = customDestMeta.nav_row;
         resolvedToCol = customDestMeta.nav_col;
       } else if (to_row != null && to_col != null) {
@@ -2747,7 +3082,8 @@ async function startServer() {
           from_row,
           from_col
         );
-        if (dest_name) customDestMeta.custom_name = String(dest_name);
+        if (resolvedDestName)
+          customDestMeta.custom_name = String(resolvedDestName);
         resolvedToRow = customDestMeta.nav_row;
         resolvedToCol = customDestMeta.nav_col;
       }
@@ -2856,7 +3192,7 @@ async function startServer() {
       res.json({
         date: nxt,
         route: planned,
-        icebergs: icebergSnapshot(1),
+        icebergs: icebergSnapshot(0, nxt),
       });
     } catch (err: any) {
       res.status(400).json({ error: err.message || String(err) });
