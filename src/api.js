@@ -1,12 +1,48 @@
 const API = "";
+let useInBrowserEngine = false;
+let enginePromise = null;
+
+async function runLocalEngine(path, opts) {
+  if (!enginePromise) {
+    enginePromise = import("./polarEngine.ts");
+  }
+  const { handlePolarApi } = await enginePromise;
+  const method = (opts?.method || "GET").toUpperCase();
+  let body = {};
+  if (opts?.body) {
+    try {
+      body = typeof opts.body === "string" ? JSON.parse(opts.body) : opts.body;
+    } catch {
+      body = {};
+    }
+  }
+  return handlePolarApi(path, method, body);
+}
 
 export async function getJSON(path, opts) {
-  const r = await fetch(API + path, opts);
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(t || r.statusText);
+  if (useInBrowserEngine) {
+    return runLocalEngine(path, opts);
   }
-  return r.json();
+  try {
+    const r = await fetch(API + path, opts);
+    if (!r.ok) {
+      if (r.status === 404 || r.status === 405 || r.status >= 500) {
+        useInBrowserEngine = true;
+        return await runLocalEngine(path, opts);
+      }
+      const t = await r.text();
+      throw new Error(t || r.statusText);
+    }
+    const contentType = r.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      useInBrowserEngine = true;
+      return await runLocalEngine(path, opts);
+    }
+    return await r.json();
+  } catch (err) {
+    useInBrowserEngine = true;
+    return await runLocalEngine(path, opts);
+  }
 }
 
 export function f16ToF32(h) {
